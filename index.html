@@ -1,0 +1,7681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+  <title>AI Formula Builder</title>
+
+  <!-- Ollama Cache Module -->
+  <script >
+    /**
+ * Ollama Cache Utility
+ * 
+ * Browser-compatible caching system for Ollama AI responses using IndexedDB.
+ * Provides persistent cache across page reloads with automatic cache key generation.
+ */
+
+const OllamaCache = (() => {
+      const DB_NAME = 'OllamaCacheDB';
+      const STORE_NAME = 'responses';
+      const DB_VERSION = 1;
+
+      let dbInstance = null;
+
+      /**
+       * Initialize IndexedDB database
+       */
+      async function initDB() {
+        if (dbInstance) {
+          return dbInstance;
+        }
+
+        return new Promise((resolve, reject) => {
+          const request = indexedDB.open(DB_NAME, DB_VERSION);
+
+          request.onerror = () => {
+            console.error('Failed to open IndexedDB:', request.error);
+            reject(request.error);
+          };
+
+          request.onsuccess = () => {
+            dbInstance = request.result;
+            console.log('✅ IndexedDB initialized successfully');
+            resolve(dbInstance);
+          };
+
+          request.onupgradeneeded = (event) => {
+            const db = event.target.result;
+            
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+              const objectStore = db.createObjectStore(STORE_NAME, { keyPath: 'cacheKey' });
+              objectStore.createIndex('timestamp', 'timestamp', { unique: false });
+              console.log('📦 Created object store:', STORE_NAME);
+            }
+          };
+        });
+      }
+
+      /**
+       * Generate a cache key from model, messages, and options
+       */
+      function generateCacheKey(model, messages, options = {}) {
+        // Create a stable representation of the request
+        const cacheData = {
+          model,
+          messages,
+          think: options.think ?? false,
+          // Don't include stream in cache key - only cache non-streaming responses
+        };
+
+        const dataString = JSON.stringify(cacheData);
+        
+        // Use SubtleCrypto API for hashing (async version for browser)
+        return crypto.subtle.digest('SHA-256', new TextEncoder().encode(dataString))
+          .then(hashBuffer => {
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+            return hashHex;
+          });
+      }
+
+      /**
+       * Get cached response from IndexedDB
+       */
+      async function get(cacheKey) {
+        const db = await initDB();
+
+        return new Promise((resolve, reject) => {
+          const transaction = db.transaction([STORE_NAME], 'readonly');
+          const objectStore = transaction.objectStore(STORE_NAME);
+          const request = objectStore.get(cacheKey);
+
+          request.onerror = () => {
+            console.error('Error reading from cache:', request.error);
+            reject(request.error);
+          };
+
+          request.onsuccess = () => {
+            const result = request.result;
+            if (result) {
+              console.log('⚡ Cache HIT! Using stored response');
+              resolve(result.response);
+            } else {
+              console.log('🔍 Cache MISS. Will fetch from Ollama...');
+              resolve(null);
+            }
+          };
+        });
+      }
+
+      /**
+       * Store response in IndexedDB cache
+       */
+      async function set(cacheKey, response) {
+        const db = await initDB();
+
+        return new Promise((resolve, reject) => {
+          const transaction = db.transaction([STORE_NAME], 'readwrite');
+          const objectStore = transaction.objectStore(STORE_NAME);
+          
+          const cacheEntry = {
+            cacheKey,
+            response,
+            timestamp: Date.now()
+          };
+
+          const request = objectStore.put(cacheEntry);
+
+          request.onerror = () => {
+            console.error('Error writing to cache:', request.error);
+            reject(request.error);
+          };
+
+          request.onsuccess = () => {
+            console.log('💾 Response cached successfully');
+            resolve();
+          };
+        });
+      }
+
+      /**
+       * Clear all cached responses
+       */
+      async function clear() {
+        const db = await initDB();
+
+        return new Promise((resolve, reject) => {
+          const transaction = db.transaction([STORE_NAME], 'readwrite');
+          const objectStore = transaction.objectStore(STORE_NAME);
+          const request = objectStore.clear();
+
+          request.onerror = () => {
+            console.error('Error clearing cache:', request.error);
+            reject(request.error);
+          };
+
+          request.onsuccess = () => {
+            console.log('🗑️ Cache cleared successfully');
+            resolve();
+          };
+        });
+      }
+
+      // Public API
+      return {
+        initDB,
+        generateCacheKey,
+        get,
+        set,
+        clear
+      };
+    })();
+
+  </script>
+  <script>
+    // Pure math utilities using standard loops
+    const MathEngine = {
+      // Dot product of two vectors
+      dot: (a, b) => a.reduce((sum, val, i) => sum + val * b[i], 0),
+
+      // Matrix-vector multiplication
+      matMulVec: (matrix, vector) => matrix.map(row => MathEngine.dot(row, vector)),
+
+      // Softmax function to convert raw scores (logits) into probabilities
+      softmax: (arr) => {
+        const max = Math.max(...arr); // Prevents overflow
+        const exps = arr.map(v => Math.exp(v - max));
+        const sum = exps.reduce((a, b) => a + b, 0);
+        return exps.map(v => v / sum);
+      },
+
+      // Generate random weights using Xavier/Glorot initialization
+      randomWeights: (rows, cols) => Array.from({ length: rows }, () =>
+            Array.from({ length: cols }, () => (Math.random() - 0.5) * Math.sqrt(2 / cols))
+          )
+        };
+
+    class LLMTokenizer {
+      constructor(text) {
+        // Extract unique characters to build vocabulary
+        this.vocab = [...new Set(text)].sort();
+        this.vocabSize = this.vocab.length;
+        
+        // Create lookup maps
+        this.charToInt = new Map(this.vocab.map((ch, i) => [ch, i]));
+        this.intToChar = new Map(this.vocab.map((ch, i) => [i, ch]));
+      }
+
+      encode(text) {
+        return [...text].map(ch => this.charToInt.get(ch) || 0);
+      }
+
+      decode(tokens) {
+        return tokens.map(t => this.intToChar.get(t) || '').join('');
+      }
+    }
+    class VanillaLLM {
+      constructor(vocabSize, hiddenSize = 16) {
+        this.vocabSize = vocabSize;
+        this.hiddenSize = hiddenSize;
+
+        // Initialize weights
+        this.W_xh = MathEngine.randomWeights(hiddenSize, vocabSize);  // Input to hidden
+        this.W_hh = MathEngine.randomWeights(hiddenSize, hiddenSize); // Hidden to hidden
+        this.W_hy = MathEngine.randomWeights(vocabSize, hiddenSize);  // Hidden to output
+        
+        // Biases
+        this.b_h = new Array(hiddenSize).fill(0);
+        this.b_y = new Array(vocabSize).fill(0);
+      }
+
+      // Forward pass through the network for a single step
+      forwardStep(inputTokenIndex, prevHidden) {
+        // 1. One-hot encode the input token index
+        const x = new Array(this.vocabSize).fill(0);
+        x[inputTokenIndex] = 1;
+
+        // 2. Compute raw hidden state values
+        const hInX = MathEngine.matMulVec(this.W_xh, x);
+        const hInH = MathEngine.matMulVec(this.W_hh, prevHidden);
+        
+        // 3. Apply Tanh activation function for hidden layer memory
+        const nextHidden = hInX.map((val, i) => Math.tanh(val + hInH[i] + this.b_h[i]));
+
+        // 4. Compute output logits
+        const yLogits = MathEngine.matMulVec(this.W_hy, nextHidden).map((val, i) => val + this.b_y[i]);
+        
+        // 5. Turn raw scores into relative probabilities
+        const probabilities = MathEngine.softmax(yLogits);
+
+        return { probabilities, nextHidden };
+      }
+    }
+    function generateText(model, tokenizer, seedText, length = 20) {
+      let tokens = tokenizer.encode(seedText);
+      let currentHidden = new Array(model.hiddenSize).fill(0);
+
+      // Warm up the hidden state context with the seed text
+      for (let i = 0; i < tokens.length - 1; i++) {
+        const step = model.forwardStep(tokens[i], currentHidden);
+        currentHidden = step.nextHidden;
+      }
+
+      let outputTokens = [...tokens];
+      let lastToken = tokens[tokens.length - 1];
+
+      // Predict future tokens one by one
+      for (let i = 0; i < length; i++) {
+        const { probabilities, nextHidden } = model.forwardStep(lastToken, currentHidden);
+        currentHidden = nextHidden;
+
+        // Sample from probability distribution
+        const nextToken = sampleFromDistribution(probabilities);
+        outputTokens.push(nextToken);
+        lastToken = nextToken;
+      }
+
+      return tokenizer.decode(outputTokens);
+    }
+
+    // Helper to select index based on random probability weights
+    function sampleFromDistribution(probs) {
+      const r = Math.random();
+      let sum = 0;
+      for (let i = 0; i < probs.length; i++) {
+        sum += probs[i];
+        if (r <= sum) return i;
+      }
+      return probs.length - 1;
+    }
+    // Function to train the model on a single sequence of tokens
+    function trainStep(model, inputs, targets, learningRate = 0.01) {
+      const hiddenStates = { '-1': new Array(model.hiddenSize).fill(0) };
+      const probabilities = [];
+      let loss = 0;
+
+      // --- 1. FORWARD PASS ---
+      // Store all intermediate steps so we can use them to calculate derivatives later
+      for (let t = 0; t < inputs.length; t++) {
+        const step = model.forwardStep(inputs[t], hiddenStates[t - 1]);
+        hiddenStates[t] = step.nextHidden;
+        probabilities[t] = step.probabilities;
+
+        // Accumulate Cross-Entropy Loss (-log of target character probability)
+        loss -= Math.log(Math.max(probabilities[t][targets[t]], 1e-15));
+      }
+
+      // Initialize gradient matrices with zeros
+      const dW_xh = model.W_xh.map(row => row.map(() => 0));
+      const dW_hh = model.W_hh.map(row => row.map(() => 0));
+      const dW_hy = model.W_hy.map(row => row.map(() => 0));
+      const db_h = new Array(model.hiddenSize).fill(0);
+      const db_y = new Array(model.vocabSize).fill(0);
+      let dh_next = new Array(model.hiddenSize).fill(0);
+
+      // --- 2. BACKPROPAGATION THROUGH TIME (BPTT) ---
+      // Loop backwards through time from the final character to the first character
+      for (let t = inputs.length - 1; t >= 0; t--) {
+        // Gradient of loss with respect to output logits (y_pred - y_true)
+        const dy = [...probabilities[t]];
+        dy[targets[t]] -= 1; 
+
+        // Gradients for output layer weights and biases
+        for (let i = 0; i < model.vocabSize; i++) {
+          db_y[i] += dy[i];
+          for (let j = 0; j < model.hiddenSize; j++) {
+            dW_hy[i][j] += dy[i] * hiddenStates[t][j];
+          }
+        }
+
+        // Gradient flowing back into the hidden state memory
+        const dh = new Array(model.hiddenSize).fill(0);
+        for (let j = 0; j < model.hiddenSize; j++) {
+          for (let i = 0; i < model.vocabSize; i++) {
+            dh[j] += model.W_hy[i][j] * dy[i];
+          }
+          dh[j] += dh_next[j]; // Include context from future steps
+        }
+
+        // Gradient through the Tanh activation function derivative: (1 - h^2)
+        const dh_raw = new Array(model.hiddenSize).fill(0);
+        for (let j = 0; j < model.hiddenSize; j++) {
+          dh_raw[j] = (1 - hiddenStates[t][j] * hiddenStates[t][j]) * dh[j];
+        }
+
+        // Gradients for input and recurrent weights
+        for (let i = 0; i < model.hiddenSize; i++) {
+          db_h[i] += dh_raw[i];
+          // Input weights
+          dW_xh[i][inputs[t]] += dh_raw[i]; // (Since input x is a one-hot vector)
+          // Hidden recurrent weights
+          for (let j = 0; j < model.hiddenSize; j++) {
+            dW_hh[i][j] += dh_raw[i] * hiddenStates[t - 1][j];
+          }
+        }
+
+        // Save hidden state gradient for the preceding time step (t-1)
+        dh_next = new Array(model.hiddenSize).fill(0);
+        for (let j = 0; j < model.hiddenSize; j++) {
+          for (let i = 0; i < model.hiddenSize; i++) {
+            dh_next[j] += model.W_hh[i][j] * dh_raw[i];
+          }
+        }
+      }
+
+      // --- 3. WEIGHT UPDATES (Optimization Step) ---
+      // Clip explosive gradients to prevent network crash
+      const clipValue = 5;
+      const clip = (val) => Math.max(-clipValue, Math.min(clipValue, val));
+
+      for (let i = 0; i < model.hiddenSize; i++) {
+        model.b_h[i] -= learningRate * clip(db_h[i]);
+        for (let j = 0; j < model.vocabSize; j++) model.W_xh[i][j] -= learningRate * clip(dW_xh[i][j]);
+        for (let j = 0; j < model.hiddenSize; j++) model.W_hh[i][j] -= learningRate * clip(dW_hh[i][j]);
+      }
+      for (let i = 0; i < model.vocabSize; i++) {
+        model.b_y[i] -= learningRate * clip(db_y[i]);
+        for (let j = 0; j < model.hiddenSize; j++) model.W_hy[i][j] -= learningRate * clip(dW_hy[i][j]);
+      }
+
+      return loss / inputs.length;
+    }
+
+  </script>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        Arial,
+        sans-serif;
+
+      background: #f5f7fb;
+      color: #1f2937;
+      height: 100vh;
+
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* --------------------------------------------------
+       HEADER
+    -------------------------------------------------- */
+
+    .header {
+      background: #2563eb;
+      color: white;
+      padding: 16px 24px;
+
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+      position: relative;
+      z-index: 1000;
+    }
+
+    .header h1 {
+      font-size: 20px;
+      font-weight: 600;
+    }
+
+    .model-info {
+      font-size: 13px;
+      opacity: 0.9;
+    }
+
+    /* --------------------------------------------------
+       HAMBURGER MENU
+    -------------------------------------------------- */
+
+    .hamburger-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      z-index: 1001;
+    }
+
+    .hamburger-btn span {
+      display: block;
+      width: 25px;
+      height: 3px;
+      background: white;
+      border-radius: 2px;
+      transition: all 0.3s ease;
+    }
+
+    .hamburger-btn.active span:nth-child(1) {
+      transform: rotate(45deg) translate(7px, 7px);
+    }
+
+    .hamburger-btn.active span:nth-child(2) {
+      opacity: 0;
+    }
+
+    .hamburger-btn.active span:nth-child(3) {
+      transform: rotate(-45deg) translate(7px, -7px);
+    }
+
+    .side-menu {
+      position: fixed;
+      top: 0;
+      left: -300px;
+      width: 300px;
+      height: 100vh;
+      background: #1e40af;
+      box-shadow: 2px 0 10px rgba(0, 0, 0, 0.3);
+      transition: left 0.3s ease;
+      z-index: 999;
+      overflow-y: auto;
+    }
+
+    .side-menu.open {
+      left: 0;
+    }
+
+    .menu-header {
+      padding: 20px;
+      background: #1d4ed8;
+      color: white;
+      font-size: 18px;
+      font-weight: 600;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .menu-content {
+      padding: 20px;
+    }
+
+    .menu-item {
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background 0.2s ease;
+      color: white;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .menu-item:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .menu-item.danger {
+      background: rgba(239, 68, 68, 0.2);
+    }
+
+    .menu-item.danger:hover {
+      background: rgba(239, 68, 68, 0.3);
+    }
+
+    .menu-icon {
+      font-size: 16px;
+    }
+
+    .menu-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.3s ease, visibility 0.3s ease;
+      z-index: 998;
+    }
+
+    .menu-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    /* --------------------------------------------------
+       CHAT
+    -------------------------------------------------- */
+
+    .chat-container {
+      flex: 1;
+      overflow-y: auto;
+
+      padding: 24px;
+
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .message {
+      max-width: 80%;
+      padding: 14px 16px;
+      border-radius: 10px;
+
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .message.user {
+      align-self: flex-end;
+
+      background: #2563eb;
+      color: white;
+
+      border-bottom-right-radius: 2px;
+    }
+
+    .message.assistant {
+      align-self: flex-start;
+
+      background: white;
+      color: #1f2937;
+
+      border: 1px solid #e5e7eb;
+
+      box-shadow:
+        0 1px 3px rgba(0, 0, 0, 0.05);
+
+      width: min(90%, 1000px);
+      max-width: 1000px;
+
+      position: relative;
+    }
+
+    .message.system {
+      align-self: stretch;
+
+      background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
+      color: #0c4a6e;
+
+      border: 2px solid #0ea5e9;
+      border-left-width: 6px;
+
+      box-shadow:
+        0 2px 8px rgba(14, 165, 233, 0.15);
+
+      width: 100%;
+      max-width: 100%;
+
+      position: relative;
+      margin-bottom: 24px;
+    }
+
+    .system-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid #bae6fd;
+    }
+
+    .system-title {
+      font-weight: 700;
+      font-size: 15px;
+      color: #0c4a6e;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .system-badge {
+      background: #0ea5e9;
+      color: white;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+    }
+
+    .system-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .system-btn {
+      background: none;
+      border: 1px solid #0ea5e9;
+      color: #0ea5e9;
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .system-btn:hover {
+      background: #0ea5e9;
+      color: white;
+    }
+
+    .system-content {
+      font-size: 14px;
+      line-height: 1.7;
+      color: #075985;
+    }
+
+    .system-section {
+      margin-bottom: 12px;
+    }
+
+    .system-section-title {
+      font-weight: 600;
+      font-size: 13px;
+      color: #0c4a6e;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .system-editor {
+      display: none;
+      margin-top: 12px;
+    }
+
+    .system-editor.active {
+      display: block;
+    }
+
+    .system-textarea {
+      width: 100%;
+      min-height: 150px;
+      border: 2px solid #0ea5e9;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      resize: vertical;
+      outline: none;
+      background: white;
+      color: #0c4a6e;
+    }
+
+    .system-textarea:focus {
+      border-color: #0284c7;
+      box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.1);
+    }
+
+    .system-editor-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+      justify-content: flex-end;
+    }
+
+    /* --------------------------------------------------
+       LIKE BUTTON
+    -------------------------------------------------- */
+
+    .like-button-container {
+      display: flex;
+      gap: 6px;
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid #f3f4f6;
+      justify-content: flex-start;
+      align-items: center;
+    }
+
+    .like-button {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 20px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font-size: 18px;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+
+    .like-button:hover {
+      background: #f3f4f6;
+      transform: scale(1.05);
+    }
+
+    .like-button.active {
+      background: #eff6ff;
+      border-color: #3b82f6;
+      transform: scale(1.1);
+    }
+
+    .like-button.like-thumbs-up.active {
+      background: #ecfdf5;
+      border-color: #10b981;
+    }
+
+    .like-button.like-heart.active {
+      background: #fef2f2;
+      border-color: #ef4444;
+      animation: heartBeat 0.3s ease;
+    }
+
+    .like-button.like-star.active {
+      background: #fffbeb;
+      border-color: #f59e0b;
+      animation: starSpin 0.4s ease;
+    }
+
+    .like-button.like-fire.active {
+      background: #fff7ed;
+      border-color: #f97316;
+      animation: fireShake 0.4s ease;
+    }
+
+    .like-button.like-clap.active {
+      background: #f5f3ff;
+      border-color: #8b5cf6;
+      animation: clapBounce 0.4s ease;
+    }
+
+    @keyframes heartBeat {
+      0%, 100% { transform: scale(1); }
+      25% { transform: scale(1.2); }
+      50% { transform: scale(1.1); }
+    }
+
+    @keyframes starSpin {
+      0% { transform: rotate(0deg) scale(1); }
+      50% { transform: rotate(180deg) scale(1.15); }
+      100% { transform: rotate(360deg) scale(1.1); }
+    }
+
+    @keyframes fireShake {
+      0%, 100% { transform: translateX(0) scale(1); }
+      25% { transform: translateX(-3px) scale(1.1); }
+      50% { transform: translateX(3px) scale(1.15); }
+      75% { transform: translateX(-2px) scale(1.1); }
+    }
+
+    @keyframes clapBounce {
+      0%, 100% { transform: translateY(0) scale(1); }
+      25% { transform: translateY(-5px) scale(1.1); }
+      50% { transform: translateY(0) scale(1.15); }
+      75% { transform: translateY(-3px) scale(1.1); }
+    }
+
+    .like-emoji {
+      display: inline-block;
+      font-size: 20px;
+      line-height: 1;
+    }
+
+    .like-count {
+      font-size: 11px;
+      font-weight: 600;
+      color: #6b7280;
+      min-width: 12px;
+      text-align: center;
+    }
+
+    .like-button.active .like-count {
+      color: #1f2937;
+    }
+
+    /* --------------------------------------------------
+       THINKING
+    -------------------------------------------------- */
+
+    .thinking-section {
+      background: #f3f4f6;
+      border-left: 3px solid #9ca3af;
+
+      padding: 10px 12px;
+      margin-bottom: 12px;
+
+      border-radius: 4px;
+
+      color: #6b7280;
+      font-size: 13px;
+    }
+
+    .thinking-label {
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #4b5563;
+    }
+
+    .thinking-content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .answer-label {
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #374151;
+    }
+
+    .answer-content {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* --------------------------------------------------
+       INPUT
+    -------------------------------------------------- */
+
+    .input-container {
+      background: white;
+
+      border-top: 1px solid #e5e7eb;
+
+      padding: 14px 20px;
+
+      display: flex;
+      gap: 10px;
+    }
+
+    #messageInput {
+      flex: 1;
+
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+
+      padding: 12px 14px;
+
+      font-size: 15px;
+
+      outline: none;
+    }
+
+    #messageInput:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+    }
+
+    #sendButton {
+      border: none;
+      border-radius: 8px;
+
+      background: #2563eb;
+      color: white;
+
+      padding: 0 24px;
+
+      font-size: 15px;
+      font-weight: 600;
+
+      cursor: pointer;
+    }
+
+    #sendButton:hover:not(:disabled) {
+      background: #1d4ed8;
+    }
+
+    #sendButton:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+
+    /* --------------------------------------------------
+       FORMULA SECTION
+    -------------------------------------------------- */
+
+    .formula-section {
+      margin-top: 20px;
+
+      background: white;
+
+      border: 1px solid #dbe2ea;
+      border-radius: 10px;
+
+      padding: 18px;
+    }
+
+    .formula-header {
+      font-size: 18px;
+      font-weight: 700;
+
+      color: #111827;
+
+      margin-bottom: 12px;
+    }
+
+    .formula-subheader {
+      font-size: 14px;
+      font-weight: 600;
+
+      margin-top: 18px;
+      margin-bottom: 8px;
+
+      color: #374151;
+    }
+
+    .formula-list {
+      background: #111827;
+      color: #e5e7eb;
+
+      border-radius: 8px;
+
+      padding: 14px;
+
+      font-family: Consolas, Monaco, monospace;
+      font-size: 14px;
+
+      overflow-x: auto;
+    }
+
+    .formula-item {
+      padding: 5px 0;
+    }
+
+    /* --------------------------------------------------
+       VARIABLES
+    -------------------------------------------------- */
+
+    .variables-grid {
+      display: grid;
+
+      grid-template-columns:
+        minmax(120px, 1fr)
+        minmax(180px, 2fr)
+        110px;
+
+      gap: 8px;
+
+      align-items: center;
+    }
+
+    .variable-row {
+      display: contents;
+    }
+
+    .variable-name {
+      font-family: Consolas, Monaco, monospace;
+      font-weight: 700;
+    }
+
+    .variable-label {
+      color: #6b7280;
+      font-size: 13px;
+    }
+
+    .variable-input {
+      width: 100%;
+
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+
+      padding: 8px;
+
+      font-size: 14px;
+    }
+
+    .variable-type {
+      font-size: 12px;
+      color: #6b7280;
+    }
+
+    /* --------------------------------------------------
+       CALCULATE
+    -------------------------------------------------- */
+
+    .calculate-btn {
+      margin-top: 16px;
+
+      padding: 10px 18px;
+
+      border: none;
+      border-radius: 7px;
+
+      background: #10b981;
+      color: white;
+
+      font-weight: 600;
+
+      cursor: pointer;
+    }
+
+    .calculate-btn:hover {
+      background: #059669;
+    }
+
+    /* --------------------------------------------------
+       RESULTS
+    -------------------------------------------------- */
+
+    .result-display {
+      margin-top: 14px;
+
+      background: #ecfdf5;
+
+      border: 1px solid #a7f3d0;
+
+      border-radius: 8px;
+
+      padding: 12px;
+    }
+
+    .result-item {
+      font-family: Consolas, Monaco, monospace;
+      padding: 4px 0;
+    }
+
+    /* --------------------------------------------------
+       TREE
+    -------------------------------------------------- */
+
+    .tree-display {
+      background: #111827;
+      color: #e5e7eb;
+
+      border-radius: 8px;
+
+      padding: 16px;
+
+      font-family: Consolas, Monaco, monospace;
+
+      overflow-x: auto;
+    }
+
+    .tree-formula {
+      margin-bottom: 20px;
+    }
+
+    .tree-root {
+      color: white;
+      font-weight: 700;
+      margin-bottom: 5px;
+    }
+
+    .tree-node {
+      margin-left: 22px;
+      padding: 2px 0;
+
+      position: relative;
+    }
+
+    .tree-node::before {
+      content: "└─ ";
+      color: #6b7280;
+    }
+
+    .tree-operator {
+      color: #60a5fa;
+      font-weight: 700;
+    }
+
+    .tree-variable {
+      color: #34d399;
+    }
+
+    .tree-number {
+      color: #fbbf24;
+    }
+
+    .tree-function {
+      color: #c084fc;
+    }
+
+    /* --------------------------------------------------
+       JSON
+    -------------------------------------------------- */
+
+    .json-display {
+      background: #0f172a;
+      color: #cbd5e1;
+
+      border-radius: 8px;
+
+      padding: 14px;
+
+      font-family: Consolas, Monaco, monospace;
+      font-size: 12px;
+
+      max-height: 350px;
+      overflow: auto;
+
+      white-space: pre-wrap;
+    }
+
+    /* --------------------------------------------------
+       ERROR
+    -------------------------------------------------- */
+
+    .error-display {
+      margin-top: 10px;
+
+      background: #fee2e2;
+      color: #991b1b;
+
+      border: 1px solid #fecaca;
+
+      border-radius: 6px;
+
+      padding: 10px;
+
+      white-space: pre-wrap;
+    }
+
+    /* --------------------------------------------------
+       STATUS
+    -------------------------------------------------- */
+
+    .status {
+      font-size: 12px;
+      color: #dbeafe;
+    }
+
+    /* --------------------------------------------------
+       PROGRESS BAR
+    -------------------------------------------------- */
+
+    .progress-container {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 4px;
+      background: rgba(37, 99, 235, 0.1);
+      z-index: 10000;
+      display: none;
+    }
+
+    .progress-container.active {
+      display: block;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #2563eb, #3b82f6, #60a5fa);
+      width: 0%;
+      transition: width 0.3s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .progress-bar::after {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      right: 0;
+      background: linear-gradient(
+        90deg,
+        transparent,
+        rgba(255, 255, 255, 0.3),
+        transparent
+      );
+      animation: shimmer 1.5s infinite;
+    }
+
+    @keyframes shimmer {
+      0% {
+        transform: translateX(-100%);
+      }
+      100% {
+        transform: translateX(100%);
+      }
+    }
+
+    .progress-text {
+      position: fixed;
+      top: 60px;
+      right: 24px;
+      background: rgba(37, 99, 235, 0.95);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      z-index: 10001;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      backdrop-filter: blur(10px);
+    }
+
+    .progress-text.active {
+      display: block;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(-10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    /* --------------------------------------------------
+       HISTORY MODAL & AGENT MODAL
+    -------------------------------------------------- */
+
+    .history-modal, .agent-modal, .training-modal {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+
+    .history-modal.active, .agent-modal.active, .training-modal.active {
+      display: flex;
+    }
+
+    .history-modal-content, .agent-modal-content, .training-modal-content {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      max-width: 600px;
+      width: 90%;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    .agent-modal-content, .training-modal-content {
+      max-width: 800px;
+    }
+
+    .history-modal-header, .agent-modal-header, .training-modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      padding-bottom: 16px;
+      border-bottom: 2px solid #e5e7eb;
+    }
+
+    .history-modal-title, .agent-modal-title, .training-modal-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+
+    .history-modal-close, .agent-modal-close, .training-modal-close {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #6b7280;
+      padding: 4px 8px;
+      line-height: 1;
+    }
+
+    .history-modal-close:hover, .agent-modal-close:hover, .training-modal-close:hover {
+      color: #1f2937;
+    }
+
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .history-item {
+      padding: 16px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .history-item:hover {
+      border-color: #2563eb;
+      background: #eff6ff;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(37, 99, 235, 0.1);
+    }
+
+    .history-item-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+
+    .history-item-date {
+      font-weight: 600;
+      color: #1f2937;
+      font-size: 14px;
+    }
+
+    .history-item-count {
+      font-size: 12px;
+      color: #6b7280;
+      background: #f3f4f6;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+
+    .history-item-preview {
+      color: #6b7280;
+      font-size: 13px;
+      line-height: 1.5;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+
+    .history-empty {
+      text-align: center;
+      padding: 40px 20px;
+      color: #6b7280;
+    }
+
+    .history-empty-icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+    }
+
+    /* --------------------------------------------------
+       AGENT CONFIGURATION STYLES
+    -------------------------------------------------- */
+
+    .agent-section {
+      margin-bottom: 24px;
+    }
+
+    .agent-section-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: #1f2937;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .agent-section-description {
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+
+    .agent-textarea {
+      width: 100%;
+      min-height: 120px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 14px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+      resize: vertical;
+      outline: none;
+    }
+
+    .agent-textarea:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+    }
+
+    .agent-textarea.code {
+      font-family: Consolas, Monaco, monospace;
+      font-size: 13px;
+      min-height: 200px;
+    }
+
+    .agent-actions {
+      display: flex;
+      gap: 12px;
+      justify-content: flex-end;
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .agent-btn {
+      padding: 10px 20px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .agent-btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+
+    .agent-btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    .agent-btn-secondary {
+      background: #f3f4f6;
+      color: #374151;
+      border: 1px solid #d1d5db;
+    }
+
+    .agent-btn-secondary:hover {
+      background: #e5e7eb;
+    }
+
+    .agent-info-box {
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 13px;
+      color: #1e40af;
+      margin-top: 12px;
+    }
+
+    .agent-name-input {
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .agent-name-input:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+    }
+
+    /* --------------------------------------------------
+       TRAINING MODAL STYLES
+    -------------------------------------------------- */
+
+    .training-config {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+
+    .training-input-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .training-input-label {
+      font-size: 14px;
+      font-weight: 600;
+      color: #374151;
+    }
+
+    .training-input {
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      outline: none;
+    }
+
+    .training-input:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+    }
+
+    .training-data-source {
+      margin-bottom: 24px;
+    }
+
+    .training-radio-group {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .training-radio-option {
+      flex: 1;
+      padding: 12px;
+      border: 2px solid #d1d5db;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s ease;
+    }
+
+    .training-radio-option:has(input:checked) {
+      border-color: #2563eb;
+      background: #eff6ff;
+    }
+
+    .training-radio-option input {
+      cursor: pointer;
+    }
+
+    .training-log {
+      background: #111827;
+      color: #10b981;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 13px;
+      border-radius: 8px;
+      padding: 16px;
+      min-height: 200px;
+      max-height: 300px;
+      overflow-y: auto;
+      margin-bottom: 16px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .training-progress-bar {
+      width: 100%;
+      height: 8px;
+      background: #e5e7eb;
+      border-radius: 4px;
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .training-progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #2563eb, #3b82f6, #60a5fa);
+      width: 0%;
+      transition: width 0.3s ease;
+    }
+
+    .training-stats {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .training-stat-card {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      text-align: center;
+    }
+
+    .training-stat-value {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1f2937;
+    }
+
+    .training-stat-label {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    .test-output-box {
+      background: #f3f4f6;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      padding: 12px;
+      margin-top: 12px;
+      font-family: Consolas, Monaco, monospace;
+      font-size: 14px;
+    }
+
+    @media (max-width: 700px) {
+
+      .variables-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .message {
+        max-width: 95%;
+      }
+
+      .message.assistant {
+        width: 95%;
+      }
+
+      .agent-modal-content {
+        max-width: 95%;
+        padding: 16px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Progress Bar -->
+  <div class="progress-container" id="progressContainer">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+  <div class="progress-text" id="progressText">Loading...</div>
+
+  <!-- Overlay -->
+  <div class="menu-overlay" id="menuOverlay"></div>
+
+  <!-- History Modal -->
+  <div class="history-modal" id="historyModal">
+    <div class="history-modal-content">
+      <div class="history-modal-header">
+        <div class="history-modal-title">📜 Conversation History</div>
+        <button class="history-modal-close" id="historyModalClose">×</button>
+      </div>
+      <div class="history-list" id="historyList">
+        <!-- History items will be populated here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Training Modal -->
+  <div class="training-modal" id="trainingModal">
+    <div class="training-modal-content">
+      <div class="training-modal-header">
+        <div class="training-modal-title">🧠 Train Model on Ollama Responses</div>
+        <button class="training-modal-close" id="trainingModalClose">×</button>
+      </div>
+
+      <!-- Training Configuration -->
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>⚙️</span>
+          <span>Training Configuration</span>
+        </div>
+        <div class="training-config">
+          <div class="training-input-group">
+            <label class="training-input-label">Epochs</label>
+            <input type="number" id="trainingEpochs" class="training-input" value="500" min="1" max="10000">
+          </div>
+          <div class="training-input-group">
+            <label class="training-input-label">Learning Rate</label>
+            <input type="number" id="trainingLearningRate" class="training-input" value="0.1" step="0.01" min="0.001" max="1">
+          </div>
+          <div class="training-input-group">
+            <label class="training-input-label">Hidden Size</label>
+            <input type="number" id="trainingHiddenSize" class="training-input" value="32" min="8" max="256">
+          </div>
+          <div class="training-input-group">
+            <label class="training-input-label">Log Interval</label>
+            <input type="number" id="trainingLogInterval" class="training-input" value="100" min="1" max="1000">
+          </div>
+        </div>
+      </div>
+
+      <!-- Data Source -->
+      <div class="agent-section training-data-source">
+        <div class="agent-section-title">
+          <span>📚</span>
+          <span>Training Data Source</span>
+        </div>
+        <div class="agent-section-description">
+          Choose what to train the model on
+        </div>
+        <div class="training-radio-group">
+          <label class="training-radio-option">
+            <input type="radio" name="trainingDataSource" value="responses" checked>
+            <div>
+              <div style="font-weight: 600;">All Ollama Responses</div>
+              <div style="font-size: 12px; color: #6b7280;">Train on all assistant messages</div>
+            </div>
+          </label>
+          <label class="training-radio-option">
+            <input type="radio" name="trainingDataSource" value="liked">
+            <div>
+              <div style="font-weight: 600;">Liked Responses Only</div>
+              <div style="font-size: 12px; color: #6b7280;">Train on responses you liked</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <!-- Training Stats -->
+      <div class="training-stats" id="trainingStats" style="display: none;">
+        <div class="training-stat-card">
+          <div class="training-stat-value" id="statEpoch">0</div>
+          <div class="training-stat-label">Epoch</div>
+        </div>
+        <div class="training-stat-card">
+          <div class="training-stat-value" id="statLoss">0.0000</div>
+          <div class="training-stat-label">Loss</div>
+        </div>
+        <div class="training-stat-card">
+          <div class="training-stat-value" id="statVocab">0</div>
+          <div class="training-stat-label">Vocab Size</div>
+        </div>
+        <div class="training-stat-card">
+          <div class="training-stat-value" id="statDataSize">0</div>
+          <div class="training-stat-label">Data Size</div>
+        </div>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="training-progress-bar" id="trainingProgressBar" style="display: none;">
+        <div class="training-progress-fill" id="trainingProgressFill"></div>
+      </div>
+
+      <!-- Training Log -->
+      <div class="training-log" id="trainingLog" style="display: none;">Waiting to start training...</div>
+
+      <!-- Test Output -->
+      <div id="testOutputSection" style="display: none;">
+        <div class="agent-section-title">
+          <span>🧪</span>
+          <span>Model Test</span>
+        </div>
+        <div class="training-input-group">
+          <label class="training-input-label">Seed Text</label>
+          <input type="text" id="testSeedText" class="training-input" placeholder="Enter seed text to test...">
+        </div>
+        <div class="training-input-group">
+          <label class="training-input-label">Generation Length</label>
+          <input type="number" id="testGenLength" class="training-input" value="20" min="1" max="200">
+        </div>
+        <button class="agent-btn agent-btn-primary" id="testModelBtn">Test Model</button>
+        <div class="test-output-box" id="testOutput" style="display: none;"></div>
+      </div>
+
+      <!-- Actions -->
+      <div class="agent-actions">
+        <button class="agent-btn agent-btn-secondary" id="trainingCancelBtn">Close</button>
+        <button class="agent-btn agent-btn-primary" id="startTrainingBtn">Start Training</button>
+        <button class="agent-btn agent-btn-secondary" id="stopTrainingBtn" style="display: none;">Stop Training</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Configuration Modal -->
+  <div class="agent-modal" id="agentModal">
+    <div class="agent-modal-content">
+      <div class="agent-modal-header">
+        <div class="agent-modal-title">🤖 Agent Configuration</div>
+        <button class="agent-modal-close" id="agentModalClose">×</button>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>🎯</span>
+          <span>Configuration Scope</span>
+        </div>
+        <div class="agent-section-description">
+          Choose whether this configuration applies to this conversation only or all conversations.
+        </div>
+        <div style="display: flex; gap: 12px; margin-top: 8px;">
+          <label style="flex: 1; padding: 12px; border: 2px solid #d1d5db; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+            <input type="radio" name="configScope" value="conversation" id="scopeConversation" checked style="cursor: pointer;">
+            <div>
+              <div style="font-weight: 600; color: #1f2937;">🔧 This Conversation</div>
+              <div style="font-size: 12px; color: #6b7280;">Applies only to this conversation</div>
+            </div>
+          </label>
+          <label style="flex: 1; padding: 12px; border: 2px solid #d1d5db; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+            <input type="radio" name="configScope" value="global" id="scopeGlobal" style="cursor: pointer;">
+            <div>
+              <div style="font-weight: 600; color: #1f2937;">🌐 All Conversations</div>
+              <div style="font-size: 12px; color: #6b7280;">Becomes default for new conversations</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>📛</span>
+          <span>Agent Name</span>
+        </div>
+        <div class="agent-section-description">
+          Give your agent a unique name to help identify it in conversations.
+        </div>
+        <input
+          type="text"
+          id="agentNameInput"
+          class="agent-name-input"
+          placeholder="e.g., Math Expert, Creative Writer, Code Assistant"
+        />
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>✨</span>
+          <span>Agent Soul (Personality & Persona)</span>
+        </div>
+        <div class="agent-section-description">
+          Define the personality, tone, and character of your agent. This shapes how it interacts with you.
+        </div>
+        <textarea
+          id="agentSoulInput"
+          class="agent-textarea"
+          placeholder="e.g., You are a friendly and encouraging math tutor who loves making complex concepts simple. You use analogies and real-world examples."
+        ></textarea>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>⚙️</span>
+          <span>System Instructions</span>
+        </div>
+        <div class="agent-section-description">
+          Define the core behavior and capabilities of your agent. These instructions guide how the agent processes requests.
+        </div>
+        <textarea
+          id="agentSystemInput"
+          class="agent-textarea code"
+          placeholder="e.g., You are an expert educational assistant specialized in mathematics..."
+        ></textarea>
+      </div>
+
+      <div class="agent-info-box">
+        💡 <strong>Tip:</strong> The Soul defines personality, while System Instructions define behavior and expertise. Together they create a unique agent for this conversation.
+      </div>
+
+      <div class="agent-actions">
+        <button class="agent-btn agent-btn-secondary" id="agentCancelBtn">Cancel</button>
+        <button class="agent-btn agent-btn-secondary" id="agentResetBtn">Reset to Default</button>
+        <button class="agent-btn agent-btn-primary" id="agentSaveBtn">Save Agent</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side Menu -->
+  <div class="side-menu" id="sideMenu">
+    <div class="menu-header">Menu</div>
+    <div class="menu-content">
+      <div class="menu-item" id="newConversationBtn">
+        <span class="menu-icon">➕</span>
+        <span>New Conversation</span>
+      </div>
+      <div class="menu-item" id="loadHistoryBtn">
+        <span class="menu-icon">📜</span>
+        <span>Load History</span>
+      </div>
+      <div class="menu-item danger" id="clearHistoryBtn">
+        <span class="menu-icon">🗑️</span>
+        <span>Clear History</span>
+      </div>
+      <div class="menu-item" id="agentConfigBtn">
+        <span class="menu-icon">🤖</span>
+        <span>Agent Configuration</span>
+      </div>
+      <div class="menu-item" id="trainModelBtn">
+        <span class="menu-icon">🧠</span>
+        <span>Train Model</span>
+      </div>
+      <div class="menu-item">
+        <span class="menu-icon">⚙️</span>
+        <span>Settings</span>
+      </div>
+      <div class="menu-item">
+        <span class="menu-icon">ℹ️</span>
+        <span>About</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="header">
+
+    <button class="hamburger-btn" id="hamburgerBtn">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+
+    <div>
+      <h1>AI Formula Builder</h1>
+      <div class="model-info">
+        <span id="modeIndicator">Standard Mode</span> |
+        <span id="agentNameDisplay" style="color: #dbeafe;">Agent: Loading...</span>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+        <input type="checkbox" id="toolModeToggle" style="cursor: pointer;">
+        <span>🔧 Tools</span>
+      </label>
+      <div class="status" id="status">
+        Ready
+      </div>
+    </div>
+
+  </div>
+
+
+  <div
+    class="chat-container"
+    id="chatContainer">
+  </div>
+
+
+  <div class="input-container">
+
+    <input
+      id="messageInput"
+      type="text"
+      autocomplete="off"
+      placeholder="Ask something such as: explain pythagorean theorem"
+    >
+
+    <button
+      id="sendButton">
+      Send
+    </button>
+
+  </div>
+
+
+<script>
+
+/* ============================================================
+   CONFIGURATION
+============================================================ */
+
+const OLLAMA_URL = "http://localhost:11434/api/chat";
+
+const MODEL = "deepseek-r1:8b";
+
+
+/* ============================================================
+   TOOL CALLING SYSTEM
+============================================================
+
+   Multi-tool calling support integrated into the formula builder.
+
+   Enable/Disable: Toggle "🔧 Tools" checkbox in the header
+
+   Available Tools:
+   1. extract_formulas - Extract formulas from AI explanations
+   2. evaluate_formula - Validate and prepare math expressions
+   3. manage_history   - Save/load/clear conversation history
+   4. manage_cache     - Control Ollama response cache
+
+   When enabled, the LLM can automatically call these tools
+   to enhance responses with formula extraction, evaluation,
+   history management, and cache control.
+
+   Implementation: Pure JavaScript, no dependencies
+============================================================ */
+
+// Tool implementations
+const tools = {
+  extract_formulas: async ({ explanation }) => {
+    if (!explanation || !explanation.trim()) {
+      return JSON.stringify({ error: "Empty explanation", success: false });
+    }
+    return JSON.stringify({
+      explanation: explanation,
+      requires_extraction: true,
+      success: true,
+      message: "Explanation ready for formula extraction"
+    });
+  },
+
+  evaluate_formula: async ({ expression, variables }) => {
+    if (!expression) {
+      return JSON.stringify({ error: "No expression provided", success: false });
+    }
+    if (!variables || typeof variables !== 'object') {
+      return JSON.stringify({ error: "Variables must be an object", success: false });
+    }
+
+    try {
+      const varPattern = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
+      const varsInExpression = expression.match(varPattern) || [];
+      const mathFunctions = ['sqrt', 'abs', 'min', 'max', 'round', 'floor', 'ceil', 'pow', 'log', 'ln', 'exp', 'sin', 'cos', 'tan'];
+      const requiredVars = varsInExpression.filter(v => !mathFunctions.includes(v.toLowerCase()));
+      const missingVars = requiredVars.filter(v => !(v in variables));
+
+      if (missingVars.length > 0) {
+        return JSON.stringify({
+          success: false,
+          error: `Missing variables: ${missingVars.join(', ')}`,
+          expression: expression
+        });
+      }
+
+      return JSON.stringify({
+        success: true,
+        expression: expression,
+        variables: variables,
+        message: "Ready for evaluation",
+        required_variables: requiredVars
+      });
+    } catch (error) {
+      return JSON.stringify({ success: false, error: error.message });
+    }
+  },
+
+  manage_history: async ({ action, data }) => {
+    try {
+      switch (action) {
+        case 'save':
+          saveConversationHistory();
+          return JSON.stringify({ success: true, action: 'save', message: "Conversation saved" });
+        case 'load':
+          const loaded = loadConversationHistory();
+          return JSON.stringify({ success: loaded, action: 'load', message: loaded ? "History loaded" : "No history found" });
+        case 'clear':
+          clearConversationHistory();
+          return JSON.stringify({ success: true, action: 'clear', message: "Current conversation cleared" });
+        case 'archive':
+          archiveConversation();
+          return JSON.stringify({ success: true, action: 'archive', message: "Conversation archived" });
+        case 'check':
+          const exists = localStorage.getItem(STORAGE_KEY) !== null;
+          return JSON.stringify({ success: true, exists: exists, message: exists ? "History exists" : "No history" });
+        default:
+          return JSON.stringify({ success: false, error: `Unknown action: ${action}` });
+      }
+    } catch (error) {
+      return JSON.stringify({ success: false, error: error.message });
+    }
+  },
+
+  manage_cache: async ({ action }) => {
+    if (typeof OllamaCache === 'undefined') {
+      return JSON.stringify({ success: false, error: "OllamaCache not available" });
+    }
+
+    try {
+      switch (action) {
+        case 'clear':
+          await OllamaCache.clear();
+          return JSON.stringify({ success: true, action: 'clear', message: "Cache cleared" });
+        case 'init':
+          await OllamaCache.initDB();
+          return JSON.stringify({ success: true, action: 'init', message: "Cache initialized" });
+        case 'status':
+          try {
+            await OllamaCache.initDB();
+            return JSON.stringify({ success: true, action: 'status', message: "Cache operational" });
+          } catch (error) {
+            return JSON.stringify({ success: false, message: "Cache not operational", error: error.message });
+          }
+        default:
+          return JSON.stringify({ success: false, error: `Unknown action: ${action}` });
+      }
+    } catch (error) {
+      return JSON.stringify({ success: false, error: error.message });
+    }
+  }
+};
+
+// Tool schemas for Ollama
+const toolSchemas = [
+  {
+    type: 'function',
+    function: {
+      name: 'extract_formulas',
+      description: 'Extract mathematical formulas, variables, equations from AI explanations. Use after receiving a math explanation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          explanation: { type: 'string', description: 'The AI-generated explanation text' }
+        },
+        required: ['explanation']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'evaluate_formula',
+      description: 'Evaluate a mathematical expression with variable values. Supports arithmetic and functions (sqrt, abs, etc.).',
+      parameters: {
+        type: 'object',
+        properties: {
+          expression: { type: 'string', description: 'Math expression like "sqrt(a^2 + b^2)"' },
+          variables: { type: 'object', description: 'Variable values like {"a": 3, "b": 4}' }
+        },
+        required: ['expression', 'variables']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'manage_history',
+      description: 'Manage conversation history. Actions: save, load, clear, check.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', description: 'Action: save, load, clear, or check', enum: ['save', 'load', 'clear', 'check'] },
+          data: { type: 'object', description: 'Data for save action (optional)' }
+        },
+        required: ['action']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'manage_cache',
+      description: 'Manage Ollama response cache. Actions: clear, init, status.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', description: 'Action: clear, init, or status', enum: ['clear', 'init', 'status'] }
+        },
+        required: ['action']
+      }
+    }
+  }
+];
+
+
+/* ============================================================
+   IMPORTANT ARCHITECTURE
+============================================================
+
+   THERE ARE TWO DIFFERENT AGENTS.
+
+   Agent 1:
+      User question
+          ↓
+      Explanation
+
+   Agent 2:
+      Completed explanation
+          ↓
+      Formula IR
+
+   DO NOT MIX THEIR SYSTEM PROMPTS.
+============================================================ */
+
+
+/* ============================================================
+   AGENT 1 — EXPLANATION AGENT
+============================================================ */
+
+const explanationSystemPrompt = `
+You are an expert educational assistant.
+
+Your job is to answer the user's question clearly and accurately.
+
+If the user asks about a mathematical concept, explain the concept and
+include the relevant mathematical relationships and formulas.
+
+For example, if the user asks:
+
+"explain pythagores theorm"
+
+recognize that the user is referring to the Pythagorean theorem and explain it.
+
+For a Pythagorean theorem explanation, identify the variables and include
+the mathematical relationship:
+
+a^2 + b^2 = c^2
+
+and, when useful:
+
+c = sqrt(a^2 + b^2)
+
+Explain what a, b, and c represent.
+
+Do not return JSON.
+
+Return a normal natural-language explanation.
+
+The response will later be passed to a separate Formula Extraction Agent.
+`;
+
+
+/* ============================================================
+   AGENT 2 — FORMULA EXTRACTION AGENT
+============================================================ */
+
+const formulaExtractorSystemPrompt = `
+You are a Formula Extraction Agent.
+
+Your input is the COMPLETED RESPONSE GENERATED BY ANOTHER AI AGENT.
+
+IMPORTANT:
+
+The input is NOT the user's original question.
+
+The input is an AI-generated explanation.
+
+Your job is to scan the ENTIRE AI-generated explanation and extract
+mathematical, computational, scientific, financial, engineering,
+statistical, logical, and business calculation logic.
+
+Do NOT answer the user's question.
+
+Do NOT explain the subject.
+
+Do NOT calculate final numeric results.
+
+Do NOT solve equations.
+
+Do NOT invent unsupported mathematical relationships.
+
+However, if mathematical logic is explicitly expressed in natural language,
+you MUST convert it into a canonical mathematical expression.
+
+For example:
+
+"The square of the hypotenuse is equal to the sum of the squares of the
+other two sides."
+
+MUST become:
+
+c^2 = a^2 + b^2
+
+
+============================================================
+EXTRACTION RULES
+============================================================
+
+Extract:
+
+1. Variables
+2. Constants
+3. Direct formulas
+4. Equations
+5. Variables that need to be solved
+6. Constraints
+7. Business rules
+8. Dependencies
+9. Outputs
+10. Warnings
+
+
+============================================================
+NATURAL LANGUAGE FORMULAS
+============================================================
+
+Convert explicit mathematical language into formulas.
+
+Example:
+
+"The area of a rectangle is length multiplied by width."
+
+Extract:
+
+area = length * width
+
+
+Example:
+
+"Monthly interest rate is annual interest rate divided by 12."
+
+Extract:
+
+r_m = r / 12
+
+
+Example:
+
+"Total installments equal tenure in years multiplied by 12."
+
+Extract:
+
+T = n * 12
+
+
+Example:
+
+"Simple interest is principal times rate times time."
+
+Extract:
+
+simpleInterest = principal * rate * time
+
+
+============================================================
+PYTHAGOREAN THEOREM
+============================================================
+
+If the input contains:
+
+"The square of the hypotenuse is equal to the sum of the squares of the
+other two sides."
+
+Extract:
+
+a^2 + b^2 = c^2
+
+If the input explicitly provides:
+
+"c = sqrt(a^2 + b^2)"
+
+extract that as a formula for c.
+
+
+============================================================
+EXPLICIT EQUATIONS
+============================================================
+
+If the source contains:
+
+a^2 + b^2 = c^2
+
+create an equation:
+
+{
+  "left": "a^2+b^2",
+  "right": "c^2",
+  "solveFor": null,
+  "confidence": "high"
+}
+
+
+If the source says:
+
+"Find c."
+
+then:
+
+{
+  "left": "a^2+b^2",
+  "right": "c^2",
+  "solveFor": "c",
+  "confidence": "high"
+}
+
+Do NOT solve the equation numerically.
+
+
+============================================================
+DIRECT FORMULAS
+============================================================
+
+Example:
+
+EMI = P * r_m * (1+r_m)^T / ((1+r_m)^T - 1)
+
+Normalize it to:
+
+(P*r_m*(1+r_m)^T)/((1+r_m)^T-1)
+
+
+============================================================
+NORMALIZATION
+============================================================
+
+Use:
+
++ - * / ^ ( )
+
+Convert:
+
+× → *
+÷ → /
+² → ^2
+³ → ^3
+√x → sqrt(x)
+
+Examples:
+
+a² → a^2
+
+(a+b)² → (a+b)^2
+
+√(a²+b²) → sqrt(a^2+b^2)
+
+
+============================================================
+VARIABLE TYPES
+============================================================
+
+Allowed:
+
+input
+derived
+solved
+constant
+series
+output
+
+
+Example:
+
+P = loan amount
+
+should be:
+
+{
+  "name": "P",
+  "label": "Loan Amount",
+  "type": "input",
+  "description": "Loan amount",
+  "unit": null,
+  "value": null,
+  "confidence": "high"
+}
+
+
+If:
+
+r_m = r / 12
+
+then r_m is:
+
+{
+  "name": "r_m",
+  "label": "Monthly Interest Rate",
+  "type": "derived",
+  "confidence": "high"
+}
+
+
+============================================================
+DEPENDENCIES
+============================================================
+
+Every formula must identify its dependencies.
+
+Example:
+
+r_m = r / 12
+
+dependencies:
+
+["r"]
+
+
+Example:
+
+EMI = (P*r_m*(1+r_m)^T)/((1+r_m)^T-1)
+
+dependencies:
+
+["P", "r_m", "T"]
+
+
+Also create dependency graph entries:
+
+{
+  "from": "r",
+  "to": "r_m",
+  "confidence": "high"
+}
+
+
+============================================================
+CONSTRAINTS
+============================================================
+
+Extract explicit constraints.
+
+Example:
+
+"The loan amount must be greater than zero."
+
+Extract:
+
+{
+  "expression": "P > 0",
+  "confidence": "high"
+}
+
+
+============================================================
+BUSINESS RULES
+============================================================
+
+Only extract rules explicitly stated by the source.
+
+Example:
+
+"Higher loan amount increases EMI."
+
+Extract:
+
+{
+  "source": "P",
+  "target": "EMI",
+  "relationship": "increases",
+  "confidence": "high"
+}
+
+
+Do not invent business rules.
+
+
+============================================================
+FUNCTIONS
+============================================================
+
+Recognize:
+
+sqrt
+abs
+min
+max
+round
+floor
+ceil
+pow
+log
+ln
+exp
+sin
+cos
+tan
+
+
+============================================================
+IMPORTANT
+============================================================
+
+Do NOT return empty results simply because the user's original question
+was conversational.
+
+You are NOT receiving the user's original question.
+
+You are receiving the completed AI-generated explanation.
+
+Look for mathematical content throughout that explanation.
+
+
+============================================================
+OUTPUT
+============================================================
+
+Return ONLY valid JSON.
+
+No Markdown.
+
+No code fences.
+
+No explanation outside JSON.
+
+Use exactly this top-level structure:
+
+{
+  "schemaVersion": "1.0",
+
+  "source": {
+    "type": "ai_generated_explanation"
+  },
+
+  "variables": [],
+
+  "constants": [],
+
+  "formulas": [],
+
+  "equations": [],
+
+  "constraints": [],
+
+  "rules": [],
+
+  "dependencies": [],
+
+  "outputs": [],
+
+  "warnings": []
+}
+
+
+============================================================
+FORMULA OBJECT
+============================================================
+
+Use:
+
+{
+  "name": "c",
+  "type": "output",
+  "expression": "sqrt(a^2+b^2)",
+  "dependencies": [
+    "a",
+    "b"
+  ],
+  "confidence": "high"
+}
+
+
+============================================================
+EQUATION OBJECT
+============================================================
+
+Use:
+
+{
+  "left": "a^2+b^2",
+  "right": "c^2",
+  "solveFor": null,
+  "confidence": "high"
+}
+
+
+============================================================
+VARIABLE OBJECT
+============================================================
+
+Use:
+
+{
+  "name": "a",
+  "label": "First perpendicular side",
+  "type": "input",
+  "description": "One of the two perpendicular sides",
+  "unit": null,
+  "value": null,
+  "confidence": "high"
+}
+
+
+============================================================
+FINAL VALIDATION
+============================================================
+
+Before returning JSON, check:
+
+1. Did you analyze the entire AI-generated explanation?
+2. Did you extract formulas expressed in natural language?
+3. Did you extract explicit equations?
+4. Did you identify variables?
+5. Did you identify derived variables?
+6. Did you identify constants?
+7. Did you identify dependencies?
+8. Did you identify outputs?
+9. Did you identify constraints?
+10. Did you identify explicit business rules?
+11. Did you avoid inventing unsupported formulas?
+12. Did you avoid calculating results?
+13. Did you avoid solving equations?
+14. Did you normalize mathematical notation?
+15. Is the response valid JSON?
+16. Is there NO text outside the JSON?
+
+Return ONLY the JSON.
+`;
+
+
+/* ============================================================
+   DOM
+============================================================ */
+
+const chatContainer =
+  document.getElementById("chatContainer");
+
+const messageInput =
+  document.getElementById("messageInput");
+
+const sendButton =
+  document.getElementById("sendButton");
+
+const statusElement =
+  document.getElementById("status");
+
+const hamburgerBtn =
+  document.getElementById("hamburgerBtn");
+
+const sideMenu =
+  document.getElementById("sideMenu");
+
+const menuOverlay =
+  document.getElementById("menuOverlay");
+
+const progressContainer =
+  document.getElementById("progressContainer");
+
+const progressBar =
+  document.getElementById("progressBar");
+
+const progressText =
+  document.getElementById("progressText");
+
+
+/* ============================================================
+   LIKE BUTTON FUNCTIONALITY
+============================================================ */
+
+const LIKE_STORAGE_KEY = "ai_formula_builder_likes";
+
+// Load likes from localStorage
+function loadLikes() {
+  try {
+    const saved = localStorage.getItem(LIKE_STORAGE_KEY);
+    return saved ? JSON.parse(saved) : {};
+  } catch (error) {
+    console.error("Failed to load likes:", error);
+    return {};
+  }
+}
+
+// Save likes to localStorage
+function saveLikes(likes) {
+  try {
+    localStorage.setItem(LIKE_STORAGE_KEY, JSON.stringify(likes));
+  } catch (error) {
+    console.error("Failed to save likes:", error);
+  }
+}
+
+// Global likes object
+let messageLikes = loadLikes();
+
+// Create like buttons for a message
+function createLikeButtons(messageElement, messageId) {
+  const container = document.createElement("div");
+  container.className = "like-button-container";
+
+  const reactions = [
+    { type: "thumbs-up", emoji: "👍", label: "Like" },
+    { type: "heart", emoji: "❤️", label: "Love" },
+    { type: "star", emoji: "⭐", label: "Star" },
+    { type: "fire", emoji: "🔥", label: "Fire" },
+    { type: "clap", emoji: "👏", label: "Clap" }
+  ];
+
+  reactions.forEach(reaction => {
+    const button = document.createElement("button");
+    button.className = `like-button like-${reaction.type}`;
+    button.title = reaction.label;
+    button.dataset.messageId = messageId;
+    button.dataset.reactionType = reaction.type;
+
+    const emoji = document.createElement("span");
+    emoji.className = "like-emoji";
+    emoji.textContent = reaction.emoji;
+
+    const count = document.createElement("span");
+    count.className = "like-count";
+
+    // Load saved reaction count
+    const savedCount = messageLikes[messageId]?.[reaction.type] || 0;
+    count.textContent = savedCount > 0 ? savedCount : "";
+    if (savedCount > 0) {
+      button.classList.add("active");
+    }
+
+    button.appendChild(emoji);
+    button.appendChild(count);
+
+    button.addEventListener("click", () => handleLikeClick(button, messageId, reaction.type));
+
+    container.appendChild(button);
+  });
+
+  messageElement.appendChild(container);
+}
+
+// Handle like button click
+function handleLikeClick(button, messageId, reactionType) {
+  const countSpan = button.querySelector(".like-count");
+
+  // Initialize message likes if not exists
+  if (!messageLikes[messageId]) {
+    messageLikes[messageId] = {};
+  }
+
+  // Toggle reaction
+  const currentCount = messageLikes[messageId][reactionType] || 0;
+  const isActive = button.classList.contains("active");
+
+  if (isActive) {
+    // Remove reaction
+    messageLikes[messageId][reactionType] = Math.max(0, currentCount - 1);
+    button.classList.remove("active");
+    countSpan.textContent = messageLikes[messageId][reactionType] > 0 ? messageLikes[messageId][reactionType] : "";
+  } else {
+    // Add reaction
+    messageLikes[messageId][reactionType] = currentCount + 1;
+    button.classList.add("active");
+    countSpan.textContent = messageLikes[messageId][reactionType];
+  }
+
+  // Save to localStorage
+  saveLikes(messageLikes);
+
+  console.log(`Reaction ${reactionType} for message ${messageId}:`, messageLikes[messageId][reactionType]);
+}
+
+// Generate unique message ID
+function generateMessageId() {
+  return `msg_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// Reattach event listeners to like buttons (for loaded messages)
+function reattachLikeButtonListeners(messageElement) {
+  const likeButtons = messageElement.querySelectorAll('.like-button');
+  likeButtons.forEach(button => {
+    const messageId = button.dataset.messageId;
+    const reactionType = button.dataset.reactionType;
+
+    // Remove old listener if any and add new one
+    const newButton = button.cloneNode(true);
+    button.parentNode.replaceChild(newButton, button);
+
+    newButton.addEventListener("click", () => handleLikeClick(newButton, messageId, reactionType));
+  });
+}
+
+
+/* ============================================================
+   PROGRESS BAR FUNCTIONALITY
+============================================================ */
+
+let progressInterval = null;
+
+function showProgress(message = "Loading...") {
+  progressContainer.classList.add("active");
+  progressText.classList.add("active");
+  progressText.textContent = message;
+  progressBar.style.width = "0%";
+
+  // Simulate progress from 0% to 90% over time
+  let progress = 0;
+  clearInterval(progressInterval);
+
+  progressInterval = setInterval(() => {
+    progress += Math.random() * 15;
+    if (progress > 90) {
+      progress = 90;
+      clearInterval(progressInterval);
+    }
+    progressBar.style.width = `${progress}%`;
+  }, 500);
+}
+
+function updateProgress(percent, message) {
+  if (message) {
+    progressText.textContent = message;
+  }
+  progressBar.style.width = `${Math.min(percent, 100)}%`;
+}
+
+function hideProgress() {
+  clearInterval(progressInterval);
+  progressBar.style.width = "100%";
+
+  setTimeout(() => {
+    progressContainer.classList.remove("active");
+    progressText.classList.remove("active");
+    progressBar.style.width = "0%";
+  }, 300);
+}
+
+
+/* ============================================================
+   HAMBURGER MENU FUNCTIONALITY
+============================================================ */
+
+function openMenu() {
+  sideMenu.classList.add("open");
+  menuOverlay.classList.add("active");
+  hamburgerBtn.classList.add("active");
+}
+
+function closeMenu() {
+  sideMenu.classList.remove("open");
+  menuOverlay.classList.remove("active");
+  hamburgerBtn.classList.remove("active");
+}
+
+function toggleMenu() {
+  if (sideMenu.classList.contains("open")) {
+    closeMenu();
+  } else {
+    openMenu();
+  }
+}
+
+// Hamburger button click
+hamburgerBtn.addEventListener("click", toggleMenu);
+
+// Overlay click to close
+menuOverlay.addEventListener("click", closeMenu);
+
+// Close menu on Escape key
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") {
+    if (sideMenu.classList.contains("open")) {
+      closeMenu();
+    }
+    const historyModal = document.getElementById('historyModal');
+    if (historyModal && historyModal.classList.contains('active')) {
+      closeHistoryModal();
+    }
+    const agentModal = document.getElementById('agentModal');
+    if (agentModal && agentModal.classList.contains('active')) {
+      closeAgentModal();
+    }
+  }
+});
+
+// History modal close button
+document.getElementById('historyModalClose').addEventListener('click', closeHistoryModal);
+
+// Close modal when clicking outside
+document.getElementById('historyModal').addEventListener('click', (e) => {
+  if (e.target.id === 'historyModal') {
+    closeHistoryModal();
+  }
+});
+
+/* ============================================================
+   AGENT CONFIGURATION MODAL
+============================================================ */
+
+function openAgentModal() {
+  const agentModal = document.getElementById('agentModal');
+  const agentNameInput = document.getElementById('agentNameInput');
+  const agentSoulInput = document.getElementById('agentSoulInput');
+  const agentSystemInput = document.getElementById('agentSystemInput');
+  const scopeConversation = document.getElementById('scopeConversation');
+  const scopeGlobal = document.getElementById('scopeGlobal');
+
+  const activeConfig = getActiveAgentConfig();
+
+  // Populate with current values
+  agentNameInput.value = activeConfig.name || '';
+  agentSoulInput.value = activeConfig.soul || '';
+  agentSystemInput.value = activeConfig.systemInstructions || '';
+
+  // Set scope radio button
+  if (hasConversationConfig()) {
+    scopeConversation.checked = true;
+  } else {
+    scopeGlobal.checked = true;
+  }
+
+  agentModal.classList.add('active');
+  menuOverlay.classList.add('active');
+}
+
+function closeAgentModal() {
+  const agentModal = document.getElementById('agentModal');
+  agentModal.classList.remove('active');
+  if (!sideMenu.classList.contains('open')) {
+    menuOverlay.classList.remove('active');
+  }
+}
+
+function saveAgentFromModal() {
+  const agentNameInput = document.getElementById('agentNameInput');
+  const agentSoulInput = document.getElementById('agentSoulInput');
+  const agentSystemInput = document.getElementById('agentSystemInput');
+  const scopeConversation = document.getElementById('scopeConversation');
+  const scopeGlobal = document.getElementById('scopeGlobal');
+
+  const newConfig = {
+    name: agentNameInput.value.trim() || defaultAgentConfig.name,
+    soul: agentSoulInput.value.trim() || defaultAgentConfig.soul,
+    systemInstructions: agentSystemInput.value.trim() || defaultAgentConfig.systemInstructions
+  };
+
+  // Determine scope from radio buttons
+  const isConversationSpecific = scopeConversation.checked;
+
+  if (saveAgentConfig(newConfig, isConversationSpecific)) {
+    // Update the system message in conversation memory
+    conversationMemory[0] = {
+      role: "system",
+      content: getCombinedSystemPrompt()
+    };
+
+    // Update the system message display in chat
+    updateSystemMessageDisplay();
+
+    const scope = isConversationSpecific ? "this conversation" : "all conversations";
+    statusElement.textContent = `Agent "${newConfig.name}" configured for ${scope}`;
+    closeAgentModal();
+  } else {
+    alert("Failed to save agent configuration");
+  }
+}
+
+function resetAgentToDefault() {
+  if (confirm("Reset agent to default configuration?")) {
+    const agentNameInput = document.getElementById('agentNameInput');
+    const agentSoulInput = document.getElementById('agentSoulInput');
+    const agentSystemInput = document.getElementById('agentSystemInput');
+
+    agentNameInput.value = defaultAgentConfig.name;
+    agentSoulInput.value = defaultAgentConfig.soul;
+    agentSystemInput.value = defaultAgentConfig.systemInstructions;
+  }
+}
+
+// Agent modal event listeners
+document.getElementById('agentConfigBtn').addEventListener('click', () => {
+  openAgentModal();
+  closeMenu();
+});
+
+document.getElementById('agentModalClose').addEventListener('click', closeAgentModal);
+
+document.getElementById('agentCancelBtn').addEventListener('click', closeAgentModal);
+
+document.getElementById('agentSaveBtn').addEventListener('click', saveAgentFromModal);
+
+document.getElementById('agentResetBtn').addEventListener('click', resetAgentToDefault);
+
+document.getElementById('agentModal').addEventListener('click', (e) => {
+  if (e.target.id === 'agentModal') {
+    closeAgentModal();
+  }
+});
+
+// Menu item handlers
+document.getElementById("newConversationBtn").addEventListener("click", () => {
+  if (confirm("Start a new conversation? Current conversation will be archived.")) {
+    // Archive current conversation before clearing
+    archiveConversation();
+    // Clear current conversation UI and memory
+    clearConversationHistory();
+    // Clear the current saved state too
+    localStorage.removeItem(STORAGE_KEY);
+    statusElement.textContent = "New conversation started";
+  }
+  closeMenu();
+});
+
+document.getElementById("loadHistoryBtn").addEventListener("click", () => {
+  showHistoryListModal();
+  closeMenu();
+});
+
+document.getElementById("clearHistoryBtn").addEventListener("click", () => {
+  if (confirm("Are you sure you want to delete ALL conversation history? This cannot be undone.")) {
+    deleteAllHistory();
+  }
+  closeMenu();
+});
+
+
+/* ============================================================
+   AGENT CONFIGURATION
+============================================================ */
+
+const STORAGE_KEY_AGENT_GLOBAL = "ai_formula_builder_agent_global";
+const STORAGE_KEY_CONVERSATION_CONFIG = "ai_formula_builder_conversation_config";
+
+// Default agent configuration
+const defaultAgentConfig = {
+  name: "Formula Builder Assistant",
+  soul: "You are a helpful, clear, and enthusiastic assistant. You explain concepts with patience and use examples to make things easier to understand.",
+  systemInstructions: explanationSystemPrompt
+};
+
+// Global agent configuration (applies to all conversations by default)
+let globalAgentConfig = { ...defaultAgentConfig };
+
+// Conversation-specific agent configuration (overrides global for this conversation)
+let conversationAgentConfig = null; // null means use global
+
+// Current active configuration (computed from global + conversation override)
+let currentAgentConfig = { ...defaultAgentConfig };
+
+// Get the active agent config (conversation-specific or global)
+function getActiveAgentConfig() {
+  return conversationAgentConfig || globalAgentConfig;
+}
+
+// Check if conversation has custom config
+function hasConversationConfig() {
+  return conversationAgentConfig !== null;
+}
+
+// Load global agent configuration from localStorage
+function loadGlobalAgentConfig() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_AGENT_GLOBAL);
+    if (saved) {
+      const config = JSON.parse(saved);
+      globalAgentConfig = { ...defaultAgentConfig, ...config };
+      console.log("✅ Global agent configuration loaded:", globalAgentConfig.name);
+      return true;
+    }
+  } catch (error) {
+    console.error("Failed to load global agent config:", error);
+  }
+  return false;
+}
+
+// Load conversation-specific agent configuration
+function loadConversationAgentConfig() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_CONVERSATION_CONFIG);
+    if (saved) {
+      const config = JSON.parse(saved);
+      conversationAgentConfig = config;
+      console.log("✅ Conversation-specific agent config loaded:", config.name);
+      return true;
+    }
+  } catch (error) {
+    console.error("Failed to load conversation config:", error);
+  }
+  conversationAgentConfig = null; // Use global
+  return false;
+}
+
+// Load all agent configurations
+function loadAgentConfig() {
+  loadGlobalAgentConfig();
+  loadConversationAgentConfig();
+  currentAgentConfig = getActiveAgentConfig();
+  return true;
+}
+
+// Save global agent configuration to localStorage
+function saveGlobalAgentConfig(config) {
+  try {
+    globalAgentConfig = { ...config };
+    localStorage.setItem(STORAGE_KEY_AGENT_GLOBAL, JSON.stringify(config));
+    console.log("💾 Global agent configuration saved:", config.name);
+
+    // If no conversation-specific config, update current
+    if (!hasConversationConfig()) {
+      currentAgentConfig = { ...config };
+      updateAgentDisplay();
+    }
+    return true;
+  } catch (error) {
+    console.error("Failed to save global agent config:", error);
+    return false;
+  }
+}
+
+// Save conversation-specific agent configuration
+function saveConversationAgentConfig(config) {
+  try {
+    conversationAgentConfig = { ...config };
+    localStorage.setItem(STORAGE_KEY_CONVERSATION_CONFIG, JSON.stringify(config));
+    console.log("💾 Conversation-specific agent config saved:", config.name);
+    currentAgentConfig = { ...config };
+    updateAgentDisplay();
+    return true;
+  } catch (error) {
+    console.error("Failed to save conversation agent config:", error);
+    return false;
+  }
+}
+
+// Clear conversation-specific config (revert to global)
+function clearConversationAgentConfig() {
+  try {
+    conversationAgentConfig = null;
+    localStorage.removeItem(STORAGE_KEY_CONVERSATION_CONFIG);
+    console.log("🔄 Reverted to global agent configuration");
+    currentAgentConfig = { ...globalAgentConfig };
+    updateAgentDisplay();
+    return true;
+  } catch (error) {
+    console.error("Failed to clear conversation config:", error);
+    return false;
+  }
+}
+
+// Save agent configuration (determines scope automatically)
+function saveAgentConfig(config, isConversationSpecific = true) {
+  if (isConversationSpecific) {
+    return saveConversationAgentConfig(config);
+  } else {
+    return saveGlobalAgentConfig(config);
+  }
+}
+
+// Get combined system prompt (system instructions + soul)
+function getCombinedSystemPrompt() {
+  const activeConfig = getActiveAgentConfig();
+
+  // Safety check - if activeConfig is not initialized, use defaults
+  if (!activeConfig) {
+    return explanationSystemPrompt;
+  }
+
+  const soul = activeConfig.soul?.trim();
+  const instructions = activeConfig.systemInstructions?.trim();
+
+  if (soul && instructions) {
+    return `${soul}\n\n${instructions}`;
+  }
+  return instructions || soul || explanationSystemPrompt;
+}
+
+// Update agent display in UI
+function updateAgentDisplay() {
+  const activeConfig = getActiveAgentConfig();
+  const agentName = activeConfig.name || "AI Assistant";
+  const agentNameDisplay = document.getElementById('agentNameDisplay');
+  if (agentNameDisplay) {
+    const scope = hasConversationConfig() ? "🔧" : "🌐";
+    agentNameDisplay.textContent = `${scope} Agent: ${agentName}`;
+    agentNameDisplay.title = hasConversationConfig() ?
+      "Conversation-specific agent" : "Global agent (applies to all conversations)";
+  }
+  console.log("Current agent:", agentName, hasConversationConfig() ? "(Conversation)" : "(Global)");
+}
+
+/* ============================================================
+   LOCAL STORAGE HISTORY
+============================================================ */
+
+const STORAGE_KEY = "ai_formula_builder_current";
+const STORAGE_KEY_ARCHIVE = "ai_formula_builder_archive";
+const MAX_HISTORY_ITEMS = 10; // Max archived conversations
+
+/*
+   Save conversation history to localStorage
+*/
+function saveConversationHistory() {
+  try {
+    showProgress("Saving conversation...");
+
+    const history = {
+      timestamp: new Date().toISOString(),
+      conversationMemory: conversationMemory,
+      conversationAgentConfig: conversationAgentConfig, // Save conversation-specific config (or null for global)
+      chatMessages: []
+    };
+
+    // Extract chat messages from DOM (skip system message)
+    const messageElements = chatContainer.querySelectorAll(".message");
+    messageElements.forEach(msg => {
+      // Skip system message - we save agent config separately
+      if (msg.classList.contains("system")) return;
+
+      const isUser = msg.classList.contains("user");
+      history.chatMessages.push({
+        role: isUser ? "user" : "assistant",
+        content: msg.textContent,
+        html: msg.innerHTML
+      });
+    });
+
+    // Only save if there are actual messages
+    if (history.chatMessages.length === 0) {
+      console.log("No messages to save, skipping save");
+      hideProgress();
+      return;
+    }
+
+    // Save to current conversation slot
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    console.log("Conversation history saved:", history.chatMessages.length, "messages");
+
+    hideProgress();
+  } catch (error) {
+    console.error("Failed to save conversation history:", error);
+    hideProgress();
+  }
+}
+
+/*
+   Archive current conversation before starting a new one
+*/
+function archiveConversation() {
+  try {
+    showProgress("Archiving conversation...");
+
+    const current = localStorage.getItem(STORAGE_KEY);
+    if (!current) {
+      console.log("No current conversation to archive");
+      hideProgress();
+      return;
+    }
+
+    // Get existing archive
+    let archive = [];
+    const savedArchive = localStorage.getItem(STORAGE_KEY_ARCHIVE);
+    if (savedArchive) {
+      archive = JSON.parse(savedArchive);
+    }
+
+    // Add current conversation to archive
+    const currentHistory = JSON.parse(current);
+    archive.unshift(currentHistory); // Add to beginning
+
+    // Keep only MAX_HISTORY_ITEMS
+    if (archive.length > MAX_HISTORY_ITEMS) {
+      archive = archive.slice(0, MAX_HISTORY_ITEMS);
+    }
+
+    // Save archive
+    localStorage.setItem(STORAGE_KEY_ARCHIVE, JSON.stringify(archive));
+    console.log("Conversation archived:", currentHistory.timestamp);
+
+    hideProgress();
+  } catch (error) {
+    console.error("Failed to archive conversation:", error);
+    hideProgress();
+  }
+}
+
+/*
+   Load conversation history from localStorage
+*/
+function loadConversationHistory() {
+  try {
+    showProgress("Loading conversation...");
+
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) {
+      console.log("No conversation history found");
+      hideProgress();
+      return false;
+    }
+
+    const history = JSON.parse(saved);
+    console.log("📦 Loading history:", {
+      hasConversationMemory: !!history.conversationMemory,
+      conversationMemoryLength: history.conversationMemory?.length,
+      hasChatMessages: !!history.chatMessages,
+      chatMessagesLength: history.chatMessages?.length
+    });
+
+    updateProgress(30, "Restoring conversation memory...");
+
+    // Restore conversation-specific agent configuration (or null for global)
+    if (history.hasOwnProperty('conversationAgentConfig')) {
+      conversationAgentConfig = history.conversationAgentConfig;
+      if (conversationAgentConfig) {
+        console.log("✅ Restored conversation-specific agent config:", conversationAgentConfig.name);
+      } else {
+        console.log("✅ Conversation uses global agent config");
+      }
+    } else if (history.agentConfig) {
+      // Legacy: old format had agentConfig, treat as conversation-specific
+      conversationAgentConfig = { ...defaultAgentConfig, ...history.agentConfig };
+      console.log("✅ Restored agent config (legacy):", conversationAgentConfig.name);
+    }
+
+    // Update current config and display
+    currentAgentConfig = getActiveAgentConfig();
+    updateAgentDisplay();
+
+    // Save the restored conversation config
+    if (conversationAgentConfig) {
+      localStorage.setItem(STORAGE_KEY_CONVERSATION_CONFIG, JSON.stringify(conversationAgentConfig));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_CONVERSATION_CONFIG);
+    }
+
+    // Restore conversation memory
+    if (history.conversationMemory && Array.isArray(history.conversationMemory)) {
+      // Update system prompt with restored agent config
+      conversationMemory.length = 0;
+      conversationMemory.push({
+        role: "system",
+        content: getCombinedSystemPrompt()
+      });
+      // Restore the rest
+      history.conversationMemory.slice(1).forEach(msg => {
+        conversationMemory.push(msg);
+      });
+      console.log("✅ Restored conversation memory:", conversationMemory.length, "messages");
+    }
+
+    updateProgress(60, "Restoring messages...");
+
+    // Restore chat messages in UI
+    if (history.chatMessages && Array.isArray(history.chatMessages)) {
+      chatContainer.innerHTML = ""; // Clear existing messages
+
+      // Add system message first
+      addSystemMessageToChat();
+
+      history.chatMessages.forEach(msg => {
+        // Skip system messages from saved data (we already added it above)
+        if (msg.role === 'system') return;
+
+        const div = document.createElement("div");
+        div.className = `message ${msg.role}`;
+        div.innerHTML = msg.html;
+        chatContainer.appendChild(div);
+
+        // Reattach like button listeners for assistant messages
+        if (msg.role === 'assistant') {
+          reattachLikeButtonListeners(div);
+        }
+      });
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      console.log("✅ Restored UI messages:", history.chatMessages.length, "messages");
+      console.log("✅ Chat container children:", chatContainer.children.length);
+    }
+
+    console.log("Conversation history loaded");
+    hideProgress();
+    return true;
+  } catch (error) {
+    console.error("Failed to load conversation history:", error);
+    hideProgress();
+    return false;
+  }
+}
+
+/*
+   Clear current conversation (but keep it in archive)
+*/
+function clearConversationHistory() {
+  try {
+    // Reset conversation memory (keep system prompt)
+    conversationMemory.length = 1;
+
+    // Clear chat UI
+    chatContainer.innerHTML = "";
+
+    // Add system message to UI
+    addSystemMessageToChat();
+
+    console.log("Conversation history cleared");
+    statusElement.textContent = "History cleared";
+
+    // Focus input
+    messageInput.focus();
+  } catch (error) {
+    console.error("Failed to clear conversation history:", error);
+  }
+}
+
+/*
+   Add system message to chat
+*/
+function addSystemMessageToChat() {
+  // Check if system message already exists
+  const existingSystem = document.getElementById("systemMessage");
+  if (existingSystem) {
+    existingSystem.remove();
+  }
+
+  // Create and prepend system message
+  const systemMsg = createSystemMessage();
+  chatContainer.insertBefore(systemMsg, chatContainer.firstChild);
+}
+
+/*
+   Delete all history (current + archive)
+*/
+function deleteAllHistory() {
+  try {
+    showProgress("Deleting all history...");
+
+    updateProgress(40, "Clearing storage...");
+    localStorage.removeItem(STORAGE_KEY);
+    localStorage.removeItem(STORAGE_KEY_ARCHIVE);
+
+    updateProgress(70, "Clearing conversation...");
+    clearConversationHistory();
+
+    console.log("All conversation history deleted");
+    statusElement.textContent = "All history deleted";
+    hideProgress();
+  } catch (error) {
+    console.error("Failed to delete all history:", error);
+    hideProgress();
+  }
+}
+
+/*
+   Show history list modal
+*/
+function showHistoryListModal() {
+  try {
+    showProgress("Loading history list...");
+
+    const historyModal = document.getElementById('historyModal');
+    const historyList = document.getElementById('historyList');
+
+    // Get archive
+    const savedArchive = localStorage.getItem(STORAGE_KEY_ARCHIVE);
+    let archive = savedArchive ? JSON.parse(savedArchive) : [];
+
+    // Add current conversation if it has messages
+    const currentSaved = localStorage.getItem(STORAGE_KEY);
+    if (currentSaved) {
+      const current = JSON.parse(currentSaved);
+      if (current.chatMessages && current.chatMessages.length > 0) {
+        archive.unshift({
+          ...current,
+          isCurrent: true
+        });
+      }
+    }
+
+    updateProgress(50, "Rendering history...");
+
+    // Clear existing list
+    historyList.innerHTML = '';
+
+    if (archive.length === 0) {
+      historyList.innerHTML = `
+        <div class="history-empty">
+          <div class="history-empty-icon">📭</div>
+          <div>No conversation history found</div>
+        </div>
+      `;
+    } else {
+      archive.forEach((conversation, index) => {
+        const date = new Date(conversation.timestamp);
+        const dateStr = date.toLocaleString();
+        const messageCount = conversation.chatMessages?.length || 0;
+
+        // Get preview text from first user message
+        let preview = 'No messages';
+        if (conversation.chatMessages && conversation.chatMessages.length > 0) {
+          const firstUserMsg = conversation.chatMessages.find(msg => msg.role === 'user');
+          if (firstUserMsg) {
+            preview = firstUserMsg.content.substring(0, 150);
+          }
+        }
+
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        item.innerHTML = `
+          <div class="history-item-header">
+            <div class="history-item-date">
+              ${conversation.isCurrent ? '🟢 Current' : dateStr}
+            </div>
+            <div class="history-item-count">${messageCount} messages</div>
+          </div>
+          <div class="history-item-preview">${preview}</div>
+        `;
+
+        item.addEventListener('click', () => {
+          loadSpecificConversation(conversation);
+          closeHistoryModal();
+        });
+
+        historyList.appendChild(item);
+      });
+    }
+
+    // Show modal
+    historyModal.classList.add('active');
+    hideProgress();
+  } catch (error) {
+    console.error("Failed to show history list:", error);
+    hideProgress();
+    alert("Failed to load conversation history");
+  }
+}
+
+/*
+   Close history modal
+*/
+function closeHistoryModal() {
+  const historyModal = document.getElementById('historyModal');
+  historyModal.classList.remove('active');
+}
+
+/*
+   Load a specific conversation
+*/
+function loadSpecificConversation(conversation) {
+  try {
+    showProgress("Loading conversation...");
+    console.log("📦 Loading specific conversation:", conversation.timestamp);
+
+    updateProgress(30, "Restoring conversation memory...");
+
+    // Restore conversation-specific agent configuration
+    if (conversation.hasOwnProperty('conversationAgentConfig')) {
+      conversationAgentConfig = conversation.conversationAgentConfig;
+      if (conversationAgentConfig) {
+        console.log("✅ Restored conversation-specific agent config:", conversationAgentConfig.name);
+      } else {
+        console.log("✅ Conversation uses global agent config");
+      }
+    } else if (conversation.agentConfig) {
+      // Legacy: old format had agentConfig, treat as conversation-specific
+      conversationAgentConfig = { ...defaultAgentConfig, ...conversation.agentConfig };
+      console.log("✅ Restored agent config (legacy):", conversationAgentConfig.name);
+    }
+
+    // Update current config and display
+    currentAgentConfig = getActiveAgentConfig();
+    updateAgentDisplay();
+
+    // Save the restored conversation config
+    if (conversationAgentConfig) {
+      localStorage.setItem(STORAGE_KEY_CONVERSATION_CONFIG, JSON.stringify(conversationAgentConfig));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_CONVERSATION_CONFIG);
+    }
+
+    // Restore conversation memory
+    if (conversation.conversationMemory && Array.isArray(conversation.conversationMemory)) {
+      // Update system prompt with restored agent config
+      conversationMemory.length = 0;
+      conversationMemory.push({
+        role: "system",
+        content: getCombinedSystemPrompt()
+      });
+      // Restore the rest
+      conversation.conversationMemory.slice(1).forEach(msg => {
+        conversationMemory.push(msg);
+      });
+      console.log("✅ Restored conversation memory:", conversationMemory.length, "messages");
+    }
+
+    updateProgress(60, "Restoring messages...");
+
+    // Restore chat messages in UI
+    if (conversation.chatMessages && Array.isArray(conversation.chatMessages)) {
+      chatContainer.innerHTML = "";
+
+      // Add system message first
+      addSystemMessageToChat();
+
+      conversation.chatMessages.forEach(msg => {
+        // Skip system messages from saved data
+        if (msg.role === 'system') return;
+
+        const div = document.createElement("div");
+        div.className = `message ${msg.role}`;
+        div.innerHTML = msg.html;
+        chatContainer.appendChild(div);
+
+        // Reattach like button listeners for assistant messages
+        if (msg.role === 'assistant') {
+          reattachLikeButtonListeners(div);
+        }
+      });
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+      console.log("✅ Restored UI messages:", conversation.chatMessages.length, "messages");
+    }
+
+    updateProgress(90, "Saving...");
+
+    // Save as current
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(conversation));
+
+    statusElement.textContent = "Conversation loaded";
+    console.log("Conversation loaded successfully");
+    hideProgress();
+  } catch (error) {
+    console.error("Failed to load conversation:", error);
+    hideProgress();
+    alert("Failed to load conversation");
+  }
+}
+
+/* ============================================================
+   MEMORIES
+============================================================ */
+
+/*
+   THIS IS THE FIRST IMPORTANT FIX.
+
+   conversationMemory belongs ONLY to the explanation agent.
+
+   It must NOT contain formulaExtractorSystemPrompt.
+*/
+
+const conversationMemory = [
+  {
+    role: "system",
+    content: getCombinedSystemPrompt()
+  }
+];
+
+
+/*
+   Separate memory for the Formula Extraction Agent.
+
+   We deliberately create this separately.
+
+   It receives only:
+      system prompt
+      +
+      completed AI explanation
+*/
+
+const formulaExtractorMemory = [
+  {
+    role: "system",
+    content: formulaExtractorSystemPrompt
+  }
+];
+
+
+/* ============================================================
+   OLLAMA CALL
+============================================================ */
+
+async function callOllama(
+  messages,
+  options = {}
+) {
+
+  const model = options.model || MODEL;
+  const isStreaming = options.stream ?? false;
+  const useTools = options.tools ?? false;
+
+  // Only use cache for non-streaming requests
+  if (!isStreaming) {
+    try {
+      // Show brief progress for cache check
+      showProgress("Checking cache...");
+
+      // Generate cache key
+      const cacheKey = await OllamaCache.generateCacheKey(model, messages, options);
+
+      // Try to get cached response
+      const cachedResponse = await OllamaCache.get(cacheKey);
+
+      if (cachedResponse) {
+        // Cache hit - hide progress and return
+        hideProgress();
+        // Return cached response in the same format as fetch would
+        return new Response(JSON.stringify(cachedResponse), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+
+      // Cache miss - progress will continue in the fetch section
+
+      // Cache miss - fetch from Ollama
+      const requestBody = {
+        model: model,
+        messages: messages,
+        stream: false,
+        think: options.think ?? false
+      };
+
+      // Add tools if requested
+      if (useTools && toolSchemas.length > 0) {
+        requestBody.tools = toolSchemas;
+      }
+
+      // Update progress message for fetch
+      updateProgress(20, `Fetching from Ollama (${model})...`);
+
+      try {
+        const response = await fetch(
+          OLLAMA_URL,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type": "application/json"
+            },
+
+            body: JSON.stringify(requestBody)
+          }
+        );
+
+        if (!response.ok) {
+          hideProgress();
+          const errorText = await response.text();
+          throw new Error(
+            `Ollama HTTP ${response.status}: ${errorText}`
+          );
+        }
+
+        updateProgress(95, "Processing response...");
+
+        // Clone response to cache it (since response body can only be read once)
+        const responseClone = response.clone();
+        const data = await responseClone.json();
+
+        // Cache the response asynchronously (don't wait for it)
+        OllamaCache.set(cacheKey, data).catch(err => {
+          console.warn('Failed to cache response:', err);
+        });
+
+        hideProgress();
+        return response;
+      } catch (error) {
+        hideProgress();
+        throw error;
+      }
+
+    } catch (cacheError) {
+      console.warn('Cache error, falling back to direct fetch:', cacheError);
+      // Fall through to normal fetch
+    }
+  }
+
+  // Streaming requests or cache error fallback
+  const requestBody = {
+    model: model,
+    messages: messages,
+    stream: isStreaming,
+    /*
+      For the explanation agent we use thinking=false.
+      This makes the output easier to feed into the extractor.
+    */
+    think: options.think ?? false
+  };
+
+  // Add tools if requested
+  if (useTools && toolSchemas.length > 0) {
+    requestBody.tools = toolSchemas;
+  }
+
+  // Show progress bar for streaming requests
+  if (isStreaming) {
+    showProgress(`Streaming from Ollama (${model})...`);
+  }
+
+  try {
+    const response = await fetch(
+      OLLAMA_URL,
+      {
+        method: "POST",
+
+        headers: {
+          "Content-Type": "application/json"
+        },
+
+        body: JSON.stringify(requestBody)
+      }
+    );
+
+
+    if (!response.ok) {
+      if (isStreaming) {
+        hideProgress();
+      }
+      const errorText =
+        await response.text();
+
+      throw new Error(
+        `Ollama HTTP ${response.status}: ${errorText}`
+      );
+    }
+
+
+    // For streaming, we'll hide progress once streaming starts
+    // This is handled in the caller where stream is consumed
+    return response;
+  } catch (error) {
+    if (isStreaming) {
+      hideProgress();
+    }
+    throw error;
+  }
+}
+
+
+/* ============================================================
+   EXPLANATION AGENT
+============================================================ */
+
+async function generateExplanation(
+  userQuestion,
+  assistantDiv
+) {
+
+  /*
+     IMPORTANT:
+
+     We add the USER QUESTION to the explanation memory.
+  */
+
+  conversationMemory.push({
+    role: "user",
+    content: userQuestion
+  });
+
+
+  const response =
+    await callOllama(
+      conversationMemory,
+      {
+        model: MODEL,
+        think: true,
+        stream: true
+      }
+    );
+
+
+  const reader =
+    response.body.getReader();
+
+  const decoder =
+    new TextDecoder();
+
+
+  let buffer = "";
+  let fullResponse = "";
+  let thinkingResponse = "";
+  let inThinkTag = false;
+
+
+  // Create thinking section
+  let thinkingSection = null;
+  let thinkingContent = null;
+
+  const answerLabel =
+    document.createElement("div");
+
+  answerLabel.className =
+    "answer-label";
+
+  answerLabel.textContent =
+    "Answer:";
+
+  assistantDiv.appendChild(
+    answerLabel
+  );
+
+
+  const answerContent =
+    document.createElement("div");
+
+  answerContent.className =
+    "answer-content";
+
+  assistantDiv.appendChild(
+    answerContent
+  );
+
+
+  while (true) {
+
+    const {
+      done,
+      value
+    } = await reader.read();
+
+
+    if (done) {
+      break;
+    }
+
+    // Hide progress on first chunk received
+    if (buffer === "") {
+      hideProgress();
+    }
+
+    buffer +=
+      decoder.decode(
+        value,
+        {
+          stream: true
+        }
+      );
+
+
+    const lines =
+      buffer.split("\n");
+
+    buffer =
+      lines.pop();
+
+
+    for (const line of lines) {
+
+      if (!line.trim()) {
+        continue;
+      }
+
+
+      let data;
+
+      try {
+        data =
+          JSON.parse(line);
+      } catch {
+        continue;
+      }
+
+      // Debug: Log the data structure (only first few times)
+      if (!window.debugLogged || window.debugLogged < 3) {
+        console.log("🔍 Stream data:", data);
+        window.debugLogged = (window.debugLogged || 0) + 1;
+      }
+
+      // Handle thinking content
+      const thinking = data.message?.thinking || "";
+      if (thinking) {
+        if (!thinkingSection) {
+          // Create thinking section on first thinking content
+          thinkingSection = document.createElement("div");
+          thinkingSection.className = "thinking-section";
+
+          const thinkingLabel = document.createElement("div");
+          thinkingLabel.className = "thinking-label";
+          thinkingLabel.textContent = "💭 Thinking:";
+          thinkingSection.appendChild(thinkingLabel);
+
+          thinkingContent = document.createElement("div");
+          thinkingContent.className = "thinking-content";
+          thinkingSection.appendChild(thinkingContent);
+
+          // Insert before answer label
+          assistantDiv.insertBefore(thinkingSection, answerLabel);
+        }
+
+        thinkingResponse += thinking;
+        thinkingContent.textContent = thinkingResponse;
+        chatContainer.scrollTop = chatContainer.scrollHeight;
+      }
+
+      const content =
+        data.message?.content || "";
+
+
+      if (content) {
+        // Check for <think> tags in content (DeepSeek R1 style)
+        let processedContent = content;
+
+        // If we find a <think> tag, extract thinking content
+        if (content.includes('<think>')) {
+          const thinkMatch = content.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
+          if (thinkMatch) {
+            const thinkText = thinkMatch[1];
+
+            // Create thinking section if not exists
+            if (!thinkingSection) {
+              thinkingSection = document.createElement("div");
+              thinkingSection.className = "thinking-section";
+
+              const thinkingLabel = document.createElement("div");
+              thinkingLabel.className = "thinking-label";
+              thinkingLabel.textContent = "💭 Thinking:";
+              thinkingSection.appendChild(thinkingLabel);
+
+              thinkingContent = document.createElement("div");
+              thinkingContent.className = "thinking-content";
+              thinkingSection.appendChild(thinkingContent);
+
+              assistantDiv.insertBefore(thinkingSection, answerLabel);
+            }
+
+            thinkingResponse += thinkText;
+            thinkingContent.textContent = thinkingResponse;
+            inThinkTag = !content.includes('</think>');
+
+            // Remove <think> tags from display content
+            processedContent = content.replace(/<think>[\s\S]*?(?:<\/think>)?/g, '');
+          }
+        } else if (inThinkTag) {
+          // We're still inside a <think> tag from previous chunk
+          if (content.includes('</think>')) {
+            const endThinkMatch = content.match(/([\s\S]*?)<\/think>/);
+            if (endThinkMatch) {
+              thinkingResponse += endThinkMatch[1];
+              thinkingContent.textContent = thinkingResponse;
+              processedContent = content.replace(/[\s\S]*?<\/think>/, '');
+              inThinkTag = false;
+            }
+          } else {
+            // Still in think tag, add to thinking
+            thinkingResponse += content;
+            thinkingContent.textContent = thinkingResponse;
+            processedContent = '';
+          }
+        }
+
+        fullResponse +=
+          processedContent;
+
+        answerContent.textContent =
+          fullResponse;
+
+        chatContainer.scrollTop =
+          chatContainer.scrollHeight;
+      }
+    }
+  }
+
+
+  /*
+     Save ONLY the completed explanation.
+  */
+
+  conversationMemory.push({
+    role: "assistant",
+    content: fullResponse
+  });
+
+  // Add like buttons to the message
+  const messageId = assistantDiv.dataset.messageId;
+  if (messageId) {
+    createLikeButtons(assistantDiv, messageId);
+  }
+
+  return fullResponse;
+}
+
+
+/* ============================================================
+   FORMULA EXTRACTION
+============================================================ */
+
+async function extractFormula(
+  aiExplanation
+) {
+
+  if (
+    !aiExplanation ||
+    !aiExplanation.trim()
+  ) {
+
+    throw new Error(
+      "The explanation agent returned an empty response."
+    );
+  }
+
+
+  /*
+     THIS IS THE SECOND IMPORTANT FIX.
+
+     The extractor receives:
+
+       formula extractor system prompt
+       +
+       COMPLETED AI EXPLANATION
+
+     It does NOT receive:
+       "explain pythagores theorm"
+  */
+
+  const messages = [
+
+    ...formulaExtractorMemory,
+
+    {
+      role: "user",
+
+      content:
+        `
+IMPORTANT:
+
+The following text is the COMPLETED RESPONSE
+GENERATED BY ANOTHER AI AGENT.
+
+It is NOT the original user question.
+
+Extract all mathematical and computational logic
+from this completed response.
+
+Return ONLY Formula IR JSON.
+
+--- BEGIN AI GENERATED RESPONSE ---
+
+${aiExplanation}
+
+--- END AI GENERATED RESPONSE ---
+`
+    }
+
+  ];
+
+
+  console.log("========== FORMULA EXTRACTOR INPUT ==========");
+
+  console.log(messages);
+
+
+  const response =  await callOllama(messages, { model: MODEL, think: false, stream: false });
+
+
+  const data =
+    await response.json();
+
+
+  const content =
+    data.message?.content || "";
+
+
+  console.log("========== FORMULA EXTRACTOR OUTPUT ==========");
+
+  console.log(content);
+
+
+  if (!content.trim()) {
+
+    throw new Error(
+      "Formula Extraction Agent returned an empty response."
+    );
+  }
+
+
+  return parseFormulaIR(content);
+}
+
+function normalizeVariableName(name) {
+
+    if (typeof name !== "string") {
+        return "";
+    }
+
+    return name
+        .trim()
+
+        // Greek letters
+        .replace(/Δ/g, "delta")
+        .replace(/δ/g, "delta")
+        .replace(/ρ/g, "rho")
+        .replace(/σ/g, "sigma")
+        .replace(/τ/g, "tau")
+        .replace(/λ/g, "lambda")
+        .replace(/μ/g, "mu")
+        .replace(/π/g, "pi")
+        .replace(/θ/g, "theta")
+        .replace(/φ/g, "phi")
+        .replace(/ψ/g, "psi")
+        .replace(/Ψ/g, "psi")
+
+        // Spaces
+        .replace(/\s+/g, "_")
+
+        // Anything not supported by our identifier grammar
+        .replace(/[^A-Za-z0-9_]/g, "_");
+}
+function normalizeFormulaIR(ir) {
+
+    /*
+     * ----------------------------------------------------------
+     * Variables
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.variables)) {
+
+        ir.variables =
+            ir.variables.map(variable => {
+
+                const originalName =
+                    variable.name;
+
+                const normalizedName =
+                    normalizeVariableName(
+                        originalName
+                    );
+
+                return {
+                    ...variable,
+
+                    originalName,
+
+                    name:
+                        normalizedName
+                };
+            });
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Constants
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.constants)) {
+
+        ir.constants =
+            ir.constants.map(constant => {
+
+                return {
+                    ...constant,
+
+                    name:
+                        normalizeVariableName(
+                            constant.name
+                        )
+                };
+            });
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Formulas
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.formulas)) {
+
+        ir.formulas =
+            ir.formulas.map(formula => {
+
+                const normalizedExpression =
+                    normalizeExpression(
+                        formula.expression
+                    );
+
+                return {
+                    ...formula,
+
+                    name:
+                        normalizeVariableName(
+                            formula.name
+                        ),
+
+                    expression:
+                        normalizedExpression,
+
+                    dependencies:
+                        getDependencies(
+                            normalizedExpression
+                        )
+                };
+            });
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Equations
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.equations)) {
+
+        ir.equations =
+            ir.equations.map(equation => {
+
+                return {
+                    ...equation,
+
+                    left:
+                        normalizeExpression(
+                            equation.left
+                        ),
+
+                    right:
+                        normalizeExpression(
+                            equation.right
+                        ),
+
+                    solveFor:
+                        equation.solveFor
+                            ? normalizeVariableName(
+                                equation.solveFor
+                            )
+                            : null
+                };
+            });
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Dependencies
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.dependencies)) {
+
+        ir.dependencies =
+            ir.dependencies.map(dependency => {
+
+                return {
+                    ...dependency,
+
+                    from:
+                        normalizeVariableName(
+                            dependency.from
+                        ),
+
+                    to:
+                        normalizeVariableName(
+                            dependency.to
+                        )
+                };
+            });
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Outputs
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.outputs)) {
+
+        ir.outputs =
+            ir.outputs.map(
+                output =>
+                    normalizeVariableName(
+                        output
+                    )
+            );
+    }
+
+
+    /*
+     * ----------------------------------------------------------
+     * Constraints
+     * ----------------------------------------------------------
+     */
+
+    if (Array.isArray(ir.constraints)) {
+
+        ir.constraints =
+            ir.constraints.map(constraint => {
+
+                if (
+                    typeof constraint.expression ===
+                    "string"
+                ) {
+
+                    return {
+                        ...constraint,
+
+                        expression:
+                            normalizeExpression(
+                                constraint.expression
+                            )
+                    };
+                }
+
+                return constraint;
+            });
+    }
+
+
+    return ir;
+}
+/* ============================================================
+   PARSE FORMULA IR
+============================================================ */
+
+function parseFormulaIR(content) {
+
+    let text = content.trim();
+
+    text = text.replace(
+        /^```json\s*/i,
+        ""
+    );
+
+    text = text.replace(
+        /^```\s*/i,
+        ""
+    );
+
+    text = text.replace(
+        /\s*```$/i,
+        ""
+    );
+
+    text = text.trim();
+
+    const firstBrace =
+        text.indexOf("{");
+
+    const lastBrace =
+        text.lastIndexOf("}");
+
+    if (
+        firstBrace >= 0 &&
+        lastBrace > firstBrace
+    ) {
+        text =
+            text.substring(
+                firstBrace,
+                lastBrace + 1
+            );
+    }
+
+    let ir;
+
+    try {
+
+        ir = JSON.parse(text);
+
+    } catch (error) {
+
+        console.error(
+            "Invalid Formula IR:",
+            text
+        );
+
+        throw new Error(
+            "Formula Extraction Agent returned invalid JSON: " +
+            error.message
+        );
+    }
+
+
+    /*
+     * Guarantee the structure.
+     */
+
+    ir.schemaVersion =
+        ir.schemaVersion || "1.0";
+
+    ir.source =
+        ir.source || {
+            type: "ai_generated_explanation"
+        };
+
+    ir.variables =
+        Array.isArray(ir.variables)
+            ? ir.variables
+            : [];
+
+    ir.constants =
+        Array.isArray(ir.constants)
+            ? ir.constants
+            : [];
+
+    ir.formulas =
+        Array.isArray(ir.formulas)
+            ? ir.formulas
+            : [];
+
+    ir.equations =
+        Array.isArray(ir.equations)
+            ? ir.equations
+            : [];
+
+    ir.constraints =
+        Array.isArray(ir.constraints)
+            ? ir.constraints
+            : [];
+
+    ir.rules =
+        Array.isArray(ir.rules)
+            ? ir.rules
+            : [];
+
+    ir.dependencies =
+        Array.isArray(ir.dependencies)
+            ? ir.dependencies
+            : [];
+
+    ir.outputs =
+        Array.isArray(ir.outputs)
+            ? ir.outputs
+            : [];
+
+    ir.warnings =
+        Array.isArray(ir.warnings)
+            ? ir.warnings
+            : [];
+
+
+    /*
+     * VERY IMPORTANT:
+     *
+     * Normalize Unicode mathematical notation
+     * before sending expressions to the parser.
+     */
+
+    return normalizeFormulaIR(ir);
+}
+
+
+/* ============================================================
+   EXPRESSION NORMALIZATION
+============================================================ */
+
+function normalizeExpression(expression) {
+
+    if (typeof expression !== "string") {
+        return "";
+    }
+
+    let result = expression;
+
+    /*
+     * ----------------------------------------------------------
+     * Unicode mathematical symbols
+     * ----------------------------------------------------------
+     */
+
+    result = result
+        // Greek uppercase
+        .replace(/Δ/g, "delta")
+
+        // Greek lowercase
+        .replace(/δ/g, "delta")
+        .replace(/ρ/g, "rho")
+        .replace(/σ/g, "sigma")
+        .replace(/τ/g, "tau")
+        .replace(/λ/g, "lambda")
+        .replace(/μ/g, "mu")
+        .replace(/π/g, "pi")
+        .replace(/θ/g, "theta")
+        .replace(/φ/g, "phi")
+        .replace(/ψ/g, "psi")
+        .replace(/Ψ/g, "psi")
+
+        // Common mathematical symbols
+        .replace(/×/g, "*")
+        .replace(/÷/g, "/")
+        .replace(/[−–—]/g, "-")
+        .replace(/≤/g, "<=")
+        .replace(/≥/g, ">=")
+        .replace(/≠/g, "!=")
+        .replace(/≈/g, "==")
+
+        // Superscripts
+        .replace(/⁰/g, "^0")
+        .replace(/¹/g, "^1")
+        .replace(/²/g, "^2")
+        .replace(/³/g, "^3")
+        .replace(/⁴/g, "^4")
+        .replace(/⁵/g, "^5")
+        .replace(/⁶/g, "^6")
+        .replace(/⁷/g, "^7")
+        .replace(/⁸/g, "^8")
+        .replace(/⁹/g, "^9")
+
+        // Square root
+        .replace(/√\s*\(/g, "sqrt(")
+        .replace(
+            /√\s*([A-Za-z_][A-Za-z0-9_]*)/g,
+            "sqrt($1)"
+        )
+
+        // Brackets
+        .replace(/\[/g, "(")
+        .replace(/\]/g, ")")
+
+        // Unicode spaces
+        .replace(/\u00A0/g, " ")
+
+        .trim();
+
+    return result;
+}
+
+
+/* ============================================================
+   DEPENDENCIES
+============================================================ */
+
+function getDependencies(
+  expression
+) {
+
+  const functions =
+    new Set([
+      "sqrt",
+      "abs",
+      "min",
+      "max",
+      "round",
+      "floor",
+      "ceil",
+      "pow",
+      "log",
+      "ln",
+      "exp",
+      "sin",
+      "cos",
+      "tan"
+    ]);
+
+
+  const matches =
+    expression.match(
+      /\b[A-Za-z_][A-Za-z0-9_]*\b/g
+    ) || [];
+
+
+  return [
+    ...new Set(
+      matches.filter(
+        name =>
+          !functions.has(
+            name.toLowerCase()
+          )
+      )
+    )
+  ];
+}
+
+
+/* ============================================================
+   TOKENIZER
+============================================================ */
+
+class Tokenizer {
+
+  constructor(expression) {
+
+    this.expression =
+      expression;
+
+    this.position =
+      0;
+
+    this.tokens =
+      [];
+  }
+
+
+  tokenize() {
+
+    while (
+      this.position <
+      this.expression.length
+    ) {
+
+      const char =
+        this.expression[
+          this.position
+        ];
+
+
+      if (
+        /\s/.test(char)
+      ) {
+
+        this.position++;
+
+        continue;
+      }
+
+
+      /*
+         NUMBER
+      */
+
+      if (
+        /[0-9.]/.test(char)
+      ) {
+
+        let number =
+          "";
+
+
+        while (
+          this.position <
+          this.expression.length &&
+          /[0-9.]/.test(
+            this.expression[
+              this.position
+            ]
+          )
+        ) {
+
+          number +=
+            this.expression[
+              this.position
+            ];
+
+          this.position++;
+        }
+
+
+        if (
+          (number.match(/\./g) || [])
+            .length > 1
+        ) {
+
+          throw new Error(
+            `Invalid number: ${number}`
+          );
+        }
+
+
+        this.tokens.push({
+          type: "number",
+          value: Number(number)
+        });
+
+
+        continue;
+      }
+
+
+      /*
+         VARIABLE OR FUNCTION
+      */
+
+      if (
+        /[A-Za-z_]/.test(char)
+      ) {
+
+        let name =
+          "";
+
+
+        while (
+          this.position <
+          this.expression.length &&
+          /[A-Za-z0-9_]/.test(
+            this.expression[
+              this.position
+            ]
+          )
+        ) {
+
+          name +=
+            this.expression[
+              this.position
+            ];
+
+          this.position++;
+        }
+
+
+        this.tokens.push({
+          type: "identifier",
+          value: name
+        });
+
+
+        continue;
+      }
+
+
+      /*
+         OPERATORS
+      */
+
+      if (
+        "+-*/^(),".includes(char)
+      ) {
+
+        this.tokens.push({
+          type: char,
+          value: char
+        });
+
+
+        this.position++;
+
+        continue;
+      }
+
+
+      /*
+         THIS IS WHERE YOUR OLD CODE
+         WAS THROWING:
+
+         Unknown character: =
+      */
+
+      throw new Error(
+        `Unknown character: ${char}`
+      );
+    }
+
+
+    this.tokens.push({
+      type: "EOF",
+      value: null
+    });
+
+
+    return this.tokens;
+  }
+}
+
+
+/* ============================================================
+   PARSER
+============================================================ */
+
+class Parser {
+
+  constructor(expression) {
+
+    this.tokens =
+      new Tokenizer(
+        expression
+      ).tokenize();
+
+    this.position =
+      0;
+  }
+
+
+  current() {
+
+    return this.tokens[
+      this.position
+    ];
+  }
+
+
+  consume(type) {
+
+    const token =
+      this.current();
+
+
+    if (
+      !token ||
+      token.type !== type
+    ) {
+
+      throw new Error(
+        `Expected ${type}, found ${
+          token
+            ? token.value
+            : "end"
+        }`
+      );
+    }
+
+
+    this.position++;
+
+    return token;
+  }
+
+
+  parse() {
+
+    const node =
+      this.parseExpression();
+
+
+    if (
+      this.current().type !== "EOF"
+    ) {
+
+      throw new Error(
+        `Unexpected token: ${
+          this.current().value
+        }`
+      );
+    }
+
+
+    return node;
+  }
+
+
+  parseExpression() {
+
+    let node =
+      this.parseTerm();
+
+
+    while (
+      this.current().type === "+" ||
+      this.current().type === "-"
+    ) {
+
+      const operator =
+        this.consume(
+          this.current().type
+        ).value;
+
+
+      node = {
+
+        type: "operator",
+
+        operator,
+
+        left: node,
+
+        right:
+          this.parseTerm()
+      };
+    }
+
+
+    return node;
+  }
+
+
+  parseTerm() {
+
+    let node =
+      this.parsePower();
+
+
+    while (
+      this.current().type === "*" ||
+      this.current().type === "/"
+    ) {
+
+      const operator =
+        this.consume(
+          this.current().type
+        ).value;
+
+
+      node = {
+
+        type: "operator",
+
+        operator,
+
+        left: node,
+
+        right:
+          this.parsePower()
+      };
+    }
+
+
+    return node;
+  }
+
+
+  parsePower() {
+
+    const node =
+      this.parseUnary();
+
+
+    if (
+      this.current().type === "^"
+    ) {
+
+      this.consume("^");
+
+
+      return {
+
+        type: "operator",
+
+        operator: "^",
+
+        left: node,
+
+        right:
+          this.parsePower()
+      };
+    }
+
+
+    return node;
+  }
+
+
+  parseUnary() {
+
+    if (
+      this.current().type === "+"
+    ) {
+
+      this.consume("+");
+
+      return this.parseUnary();
+    }
+
+
+    if (
+      this.current().type === "-"
+    ) {
+
+      this.consume("-");
+
+
+      return {
+
+        type: "operator",
+
+        operator: "*",
+
+        left: {
+          type: "number",
+          value: -1
+        },
+
+        right:
+          this.parseUnary()
+      };
+    }
+
+
+    return this.parsePrimary();
+  }
+
+
+  parsePrimary() {
+
+    const token =
+      this.current();
+
+
+    /*
+       NUMBER
+    */
+
+    if (
+      token.type === "number"
+    ) {
+
+      this.position++;
+
+
+      return {
+
+        type: "number",
+
+        value:
+          token.value
+      };
+    }
+
+
+    /*
+       VARIABLE / FUNCTION
+    */
+
+    if (
+      token.type === "identifier"
+    ) {
+
+      this.position++;
+
+
+      /*
+         FUNCTION CALL
+
+         sqrt(...)
+      */
+
+      if (
+        this.current().type === "("
+      ) {
+
+        const functionName =
+          token.value;
+
+
+        this.consume("(");
+
+
+        const args =
+          [];
+
+
+        if (
+          this.current().type !== ")"
+        ) {
+
+          args.push(
+            this.parseExpression()
+          );
+
+
+          while (
+            this.current().type === ","
+          ) {
+
+            this.consume(",");
+
+
+            args.push(
+              this.parseExpression()
+            );
+          }
+        }
+
+
+        this.consume(")");
+
+
+        return {
+
+          type: "function",
+
+          name:
+            functionName,
+
+          arguments:
+            args
+        };
+      }
+
+
+      return {
+
+        type: "variable",
+
+        name:
+          token.value
+      };
+    }
+
+
+    /*
+       PARENTHESES
+    */
+
+    if (
+      token.type === "("
+    ) {
+
+      this.consume("(");
+
+
+      const node =
+        this.parseExpression();
+
+
+      this.consume(")");
+
+
+      return node;
+    }
+
+
+    throw new Error(
+      `Unexpected token: ${
+        token.value ?? "end"
+      }`
+    );
+  }
+}
+
+
+/* ============================================================
+   EVALUATOR
+============================================================ */
+
+class FormulaEvaluator {
+
+  constructor(
+    variables = {}
+  ) {
+
+    this.variables =
+      {
+        ...variables
+      };
+  }
+
+
+  evaluate(node) {
+
+    switch (
+      node.type
+    ) {
+
+      case "number":
+
+        return node.value;
+
+
+      case "variable":
+
+        if (
+          !(node.name in
+            this.variables)
+        ) {
+
+          throw new Error(
+            `Unknown variable: ${node.name}`
+          );
+        }
+
+
+        return Number(
+          this.variables[
+            node.name
+          ]
+        );
+
+
+      case "operator": {
+
+        const left =
+          this.evaluate(
+            node.left
+          );
+
+        const right =
+          this.evaluate(
+            node.right
+          );
+
+
+        switch (
+          node.operator
+        ) {
+
+          case "+":
+            return left + right;
+
+          case "-":
+            return left - right;
+
+          case "*":
+            return left * right;
+
+          case "/":
+
+            if (
+              right === 0
+            ) {
+
+              throw new Error(
+                "Division by zero"
+              );
+            }
+
+            return left / right;
+
+          case "^":
+            return Math.pow(
+              left,
+              right
+            );
+
+          default:
+
+            throw new Error(
+              `Unsupported operator: ${
+                node.operator
+              }`
+            );
+        }
+      }
+
+
+      case "function": {
+
+        const args =
+          node.arguments.map(
+            arg =>
+              this.evaluate(arg)
+          );
+
+
+        return this.evaluateFunction(
+          node.name,
+          args
+        );
+      }
+
+
+      default:
+
+        throw new Error(
+          `Unknown AST node: ${node.type}`
+        );
+    }
+  }
+
+
+  evaluateFunction(
+    name,
+    args
+  ) {
+
+    switch (
+      name.toLowerCase()
+    ) {
+
+      case "sqrt":
+        return Math.sqrt(
+          args[0]
+        );
+
+      case "abs":
+        return Math.abs(
+          args[0]
+        );
+
+      case "min":
+        return Math.min(
+          ...args
+        );
+
+      case "max":
+        return Math.max(
+          ...args
+        );
+
+      case "round":
+        return Math.round(
+          args[0]
+        );
+
+      case "floor":
+        return Math.floor(
+          args[0]
+        );
+
+      case "ceil":
+        return Math.ceil(
+          args[0]
+        );
+
+      case "pow":
+        return Math.pow(
+          args[0],
+          args[1]
+        );
+
+      case "log":
+        return Math.log10(
+          args[0]
+        );
+
+      case "ln":
+        return Math.log(
+          args[0]
+        );
+
+      case "exp":
+        return Math.exp(
+          args[0]
+        );
+
+      case "sin":
+        return Math.sin(
+          args[0]
+        );
+
+      case "cos":
+        return Math.cos(
+          args[0]
+        );
+
+      case "tan":
+        return Math.tan(
+          args[0]
+        );
+
+      default:
+
+        throw new Error(
+          `Unsupported function: ${name}`
+        );
+    }
+  }
+}
+
+
+/* ============================================================
+   BUILD FORMULA TREES
+============================================================ */
+
+function buildFormulaTrees(
+  formulaIR
+) {
+
+  const trees = {};
+
+
+  for (
+    const formula
+    of formulaIR.formulas
+  ) {
+
+    if (
+      !formula.expression
+    ) {
+
+      continue;
+    }
+
+
+    const expression =
+      normalizeExpression(
+        formula.expression
+      );
+
+
+    try {
+
+      trees[
+        formula.name
+      ] =
+        new Parser(
+          expression
+        ).parse();
+
+    } catch (error) {
+
+      console.error(
+        "Could not parse formula:",
+        formula,
+        error
+      );
+    }
+  }
+
+
+  return trees;
+}
+
+
+/* ============================================================
+   TREE UI
+============================================================ */
+
+function createTreeNode(
+  node
+) {
+
+  const element =
+    document.createElement(
+      "div"
+    );
+
+
+  element.className =
+    "tree-node";
+
+
+  if (
+    node.type === "operator"
+  ) {
+
+    const span =
+      document.createElement(
+        "span"
+      );
+
+
+    span.className =
+      "tree-operator";
+
+
+    span.textContent =
+      node.operator;
+
+
+    element.appendChild(
+      span
+    );
+
+
+    element.appendChild(
+      createTreeNode(
+        node.left
+      )
+    );
+
+
+    element.appendChild(
+      createTreeNode(
+        node.right
+      )
+    );
+
+
+    return element;
+  }
+
+
+  if (
+    node.type === "variable"
+  ) {
+
+    const span =
+      document.createElement(
+        "span"
+      );
+
+
+    span.className =
+      "tree-variable";
+
+
+    span.textContent =
+      `VARIABLE: ${node.name}`;
+
+
+    element.appendChild(
+      span
+    );
+
+
+    return element;
+  }
+
+
+  if (
+    node.type === "number"
+  ) {
+
+    const span =
+      document.createElement(
+        "span"
+      );
+
+
+    span.className =
+      "tree-number";
+
+
+    span.textContent =
+      `NUMBER: ${node.value}`;
+
+
+    element.appendChild(
+      span
+    );
+
+
+    return element;
+  }
+
+
+  if (
+    node.type === "function"
+  ) {
+
+    const span =
+      document.createElement(
+        "span"
+      );
+
+
+    span.className =
+      "tree-function";
+
+
+    span.textContent =
+      `FUNCTION: ${node.name}`;
+
+
+    element.appendChild(
+      span
+    );
+
+
+    for (
+      const argument
+      of node.arguments
+    ) {
+
+      element.appendChild(
+        createTreeNode(
+          argument
+        )
+      );
+    }
+
+
+    return element;
+  }
+
+
+  return element;
+}
+
+
+/* ============================================================
+   HTML ESCAPE
+============================================================ */
+
+function escapeHtml(
+  value
+) {
+
+  return String(value)
+
+    .replace(
+      /&/g,
+      "&amp;"
+    )
+
+    .replace(
+      /</g,
+      "&lt;"
+    )
+
+    .replace(
+      />/g,
+      "&gt;"
+    )
+
+    .replace(
+      /"/g,
+      "&quot;"
+    )
+
+    .replace(
+      /'/g,
+      "&#039;"
+    );
+}
+
+
+/* ============================================================
+   FORMULA UI
+============================================================ */
+
+function renderFormulaIR(
+  formulaIR,
+  container
+) {
+
+  const section =
+    document.createElement(
+      "div"
+    );
+
+
+  section.className =
+    "formula-section";
+
+
+  /* ----------------------------------------------------------
+     HEADER
+  ---------------------------------------------------------- */
+
+  const header =
+    document.createElement(
+      "div"
+    );
+
+
+  header.className =
+    "formula-header";
+
+
+  header.textContent =
+    "📐 Formula Builder";
+
+
+  section.appendChild(
+    header
+  );
+
+
+  /* ----------------------------------------------------------
+     FORMULAS
+  ---------------------------------------------------------- */
+
+  const formulaTitle =
+    document.createElement(
+      "div"
+    );
+
+
+  formulaTitle.className =
+    "formula-subheader";
+
+
+  formulaTitle.textContent =
+    "Extracted Formulas";
+
+
+  section.appendChild(
+    formulaTitle
+  );
+
+
+  const formulaList =
+    document.createElement(
+      "div"
+    );
+
+
+  formulaList.className =
+    "formula-list";
+
+
+  if (
+    formulaIR.formulas.length === 0
+  ) {
+
+    formulaList.textContent =
+      "No formulas extracted.";
+
+  } else {
+
+    for (
+      const formula
+      of formulaIR.formulas
+    ) {
+
+      const item =
+        document.createElement(
+          "div"
+        );
+
+
+      item.className =
+        "formula-item";
+
+
+      item.textContent =
+        `${formula.name} = ${
+          normalizeExpression(
+            formula.expression
+          )
+        }`;
+
+
+      formulaList.appendChild(
+        item
+      );
+    }
+  }
+
+
+  section.appendChild(
+    formulaList
+  );
+
+
+  /* ----------------------------------------------------------
+     EQUATIONS
+  ---------------------------------------------------------- */
+
+  if (
+    formulaIR.equations.length
+  ) {
+
+    const title =
+      document.createElement(
+        "div"
+      );
+
+
+    title.className =
+      "formula-subheader";
+
+
+    title.textContent =
+      "Equations";
+
+
+    section.appendChild(
+      title
+    );
+
+
+    const list =
+      document.createElement(
+        "div"
+      );
+
+
+    list.className =
+      "formula-list";
+
+
+    for (
+      const equation
+      of formulaIR.equations
+    ) {
+
+      const item =
+        document.createElement(
+          "div"
+        );
+
+
+      item.className =
+        "formula-item";
+
+
+      item.textContent =
+        `${equation.left} = ${equation.right}`;
+
+
+      if (
+        equation.solveFor
+      ) {
+
+        item.textContent +=
+          `   [solve for ${equation.solveFor}]`;
+      }
+
+
+      list.appendChild(
+        item
+      );
+    }
+
+
+    section.appendChild(
+      list
+    );
+  }
+
+
+  /* ----------------------------------------------------------
+     VARIABLES
+  ---------------------------------------------------------- */
+
+  if (
+    formulaIR.variables.length
+  ) {
+
+    renderVariables(
+      formulaIR,
+      section
+    );
+  }
+
+
+  /* ----------------------------------------------------------
+     FORMULA TREE
+  ---------------------------------------------------------- */
+
+  const trees =
+    buildFormulaTrees(
+      formulaIR
+    );
+
+
+  if (
+    Object.keys(trees).length
+  ) {
+
+    const title =
+      document.createElement(
+        "div"
+      );
+
+
+    title.className =
+      "formula-subheader";
+
+
+    title.textContent =
+      "Formula Tree";
+
+
+    section.appendChild(
+      title
+    );
+
+
+    const treeDisplay =
+      document.createElement(
+        "div"
+      );
+
+
+    treeDisplay.className =
+      "tree-display";
+
+
+    for (
+      const [
+        name,
+        tree
+      ]
+      of Object.entries(trees)
+    ) {
+
+      const formulaTree =
+        document.createElement(
+          "div"
+        );
+
+
+      formulaTree.className =
+        "tree-formula";
+
+
+      const root =
+        document.createElement(
+          "div"
+        );
+
+
+      root.className =
+        "tree-root";
+
+
+      root.textContent =
+        name;
+
+
+      formulaTree.appendChild(
+        root
+      );
+
+
+      formulaTree.appendChild(
+        createTreeNode(
+          tree
+        )
+      );
+
+
+      treeDisplay.appendChild(
+        formulaTree
+      );
+    }
+
+
+    section.appendChild(
+      treeDisplay
+    );
+  }
+
+
+  /* ----------------------------------------------------------
+     WARNINGS
+  ---------------------------------------------------------- */
+
+  if (
+    formulaIR.warnings.length
+  ) {
+
+    const warning =
+      document.createElement(
+        "div"
+      );
+
+
+    warning.className =
+      "error-display";
+
+
+    warning.textContent =
+      formulaIR.warnings
+        .map(
+          warning =>
+            warning.message ||
+            String(warning)
+        )
+        .join("\n");
+
+
+    section.appendChild(
+      warning
+    );
+  }
+
+
+  /* ----------------------------------------------------------
+     RAW FORMULA IR
+  ---------------------------------------------------------- */
+
+  const jsonTitle =
+    document.createElement(
+      "div"
+    );
+
+
+  jsonTitle.className =
+    "formula-subheader";
+
+
+  jsonTitle.textContent =
+    "Formula IR JSON";
+
+
+  section.appendChild(
+    jsonTitle
+  );
+
+
+  const jsonDisplay =
+    document.createElement(
+      "div"
+    );
+
+
+  jsonDisplay.className =
+    "json-display";
+
+
+  jsonDisplay.textContent =
+    JSON.stringify(
+      formulaIR,
+      null,
+      2
+    );
+
+
+  section.appendChild(
+    jsonDisplay
+  );
+
+
+  container.appendChild(
+    section
+  );
+}
+
+
+/* ============================================================
+   VARIABLES UI
+============================================================ */
+
+function renderVariables(
+  formulaIR,
+  section
+) {
+
+  const title =
+    document.createElement(
+      "div"
+    );
+
+
+  title.className =
+    "formula-subheader";
+
+
+  title.textContent =
+    "Variables";
+
+
+  section.appendChild(
+    title
+  );
+
+
+  const grid =
+    document.createElement(
+      "div"
+    );
+
+
+  grid.className =
+    "variables-grid";
+
+
+  const inputs = {};
+
+
+  for (
+    const variable
+    of formulaIR.variables
+  ) {
+
+    const name =
+      document.createElement(
+        "div"
+      );
+
+
+    name.className =
+      "variable-name";
+
+
+    name.textContent =
+      variable.name;
+
+
+    grid.appendChild(
+      name
+    );
+
+
+    const label =
+      document.createElement(
+        "div"
+      );
+
+
+    label.className =
+      "variable-label";
+
+
+    label.textContent =
+      variable.label ||
+      variable.description ||
+      variable.name;
+
+
+    grid.appendChild(
+      label
+    );
+
+
+    const input =
+      document.createElement(
+        "input"
+      );
+
+
+    input.className =
+      "variable-input";
+
+
+    input.type =
+      "number";
+
+
+    input.step =
+      "any";
+
+
+    input.placeholder =
+      variable.label ||
+      variable.name;
+
+
+    if (
+      variable.value !== null &&
+      variable.value !== undefined &&
+      !isNaN(
+        Number(variable.value)
+      )
+    ) {
+
+      input.value =
+        variable.value;
+    }
+
+
+    /*
+       Derived variables are calculated automatically.
+    */
+
+    if (
+      variable.type === "derived" ||
+      variable.type === "output" ||
+      variable.type === "solved"
+    ) {
+
+      input.disabled =
+        true;
+    }
+
+
+    grid.appendChild(
+      input
+    );
+
+
+    inputs[
+      variable.name
+    ] =
+      input;
+  }
+
+
+  section.appendChild(
+    grid
+  );
+
+
+  const button =
+    document.createElement(
+      "button"
+    );
+
+
+  button.className =
+    "calculate-btn";
+
+
+  button.textContent =
+    "Calculate";
+
+
+  section.appendChild(
+    button
+  );
+
+
+  const result =
+    document.createElement(
+      "div"
+    );
+
+
+  section.appendChild(
+    result
+  );
+
+
+  button.addEventListener(
+    "click",
+    () => {
+
+      calculateFormulas(
+        formulaIR,
+        inputs,
+        result
+      );
+
+    }
+  );
+}
+
+
+/* ============================================================
+   CALCULATE
+============================================================ */
+
+function calculateFormulas(
+  formulaIR,
+  inputs,
+  resultContainer
+) {
+
+  try {
+
+    const values = {};
+
+
+    /*
+       Collect user input values.
+    */
+
+    for (
+      const [
+        name,
+        input
+      ]
+      of Object.entries(inputs)
+    ) {
+
+      if (
+        input.value !== ""
+      ) {
+
+        const value =
+          Number(
+            input.value
+          );
+
+
+        if (
+          !Number.isFinite(value)
+        ) {
+
+          throw new Error(
+            `Invalid value for ${name}`
+          );
+        }
+
+
+        values[name] =
+          value;
+      }
+    }
+
+
+    const evaluator =
+      new FormulaEvaluator(
+        values
+      );
+
+
+    const results = {};
+
+
+    /*
+       We don't assume that the AI returned
+       formulas in dependency order.
+
+       Example:
+
+       EMI depends on r_m
+       r_m depends on r
+
+       Even if EMI appears first, we retry
+       until all possible formulas resolve.
+    */
+
+    const pending =
+      formulaIR.formulas
+        .filter(
+          formula =>
+            formula.expression &&
+            formula.type !== "solved"
+        )
+        .map(
+          formula => ({
+            ...formula
+          })
+        );
+
+
+    let progress =
+      true;
+
+
+    while (
+      pending.length &&
+      progress
+    ) {
+
+      progress =
+        false;
+
+
+      for (
+        let i =
+          pending.length - 1;
+
+        i >= 0;
+
+        i--
+      ) {
+
+        const formula =
+          pending[i];
+
+
+        try {
+
+          const expression =
+            normalizeExpression(
+              formula.expression
+            );
+
+
+          const tree =
+            new Parser(
+              expression
+            ).parse();
+
+
+          const value =
+            evaluator.evaluate(
+              tree
+            );
+
+
+          if (
+            !Number.isFinite(value)
+          ) {
+
+            throw new Error(
+              `Formula ${formula.name} produced an invalid result.`
+            );
+          }
+
+
+          results[
+            formula.name
+          ] =
+            value;
+
+
+          /*
+             The derived value becomes available
+             to formulas that depend on it.
+          */
+
+          evaluator.variables[
+            formula.name
+          ] =
+            value;
+
+
+          /*
+             Also update the UI input if it exists.
+          */
+
+          if (
+            inputs[
+              formula.name
+            ]
+          ) {
+
+            inputs[
+              formula.name
+            ].value =
+              value;
+          }
+
+
+          pending.splice(
+            i,
+            1
+          );
+
+
+          progress =
+            true;
+
+        } catch {
+          /*
+             Dependency isn't available yet.
+             Try again on the next pass.
+          */
+        }
+      }
+    }
+
+
+    let html = "";
+
+
+    for (
+      const [
+        name,
+        value
+      ]
+      of Object.entries(results)
+    ) {
+
+      html += `
+        <div class="result-display">
+          <div class="result-item">
+            <strong>${escapeHtml(name)}</strong>
+            =
+            ${Number(value).toFixed(6)}
+          </div>
+        </div>
+      `;
+    }
+
+
+    if (
+      pending.length
+    ) {
+
+      html += `
+        <div class="error-display">
+          Could not calculate:
+          ${pending
+            .map(
+              formula =>
+                formula.name
+            )
+            .join(", ")}
+
+          One or more required variables
+          are missing, or the formula requires
+          solving an equation.
+        </div>
+      `;
+    }
+
+
+    if (!html) {
+
+      html = `
+        <div class="error-display">
+          No formulas could be calculated.
+        </div>
+      `;
+    }
+
+
+    resultContainer.innerHTML =
+      html;
+
+  } catch (error) {
+
+    resultContainer.innerHTML =
+      `
+        <div class="error-display">
+          ${escapeHtml(
+            error.message
+          )}
+        </div>
+      `;
+  }
+}
+
+
+/* ============================================================
+   TOOL CALLING HANDLER
+============================================================ */
+
+async function handleToolCalls(messages, maxIterations = 3) {
+  let iteration = 0;
+  const toolsUsed = [];
+
+  while (iteration < maxIterations) {
+    iteration++;
+
+    // Call Ollama with tools
+    const response = await callOllama(messages, {
+      model: "gemma4:e4b",
+      think: false,
+      stream: false,
+      tools: true
+    });
+
+    const data = await response.json();
+    const message = data.message;
+
+    // Add assistant's response to messages
+    messages.push(message);
+
+    // Check if there are tool calls
+    const toolCalls = message.tool_calls ?? [];
+
+    if (toolCalls.length === 0) {
+      // No more tool calls, return the final response with tools used info
+      return {
+        content: message.content,
+        toolsUsed: toolsUsed
+      };
+    }
+
+    // Execute each tool call
+    console.log(`🔧 Executing ${toolCalls.length} tool(s)...`);
+    statusElement.textContent = `Executing ${toolCalls.length} tool(s)...`;
+    showProgress(`Executing ${toolCalls.length} tool(s)...`);
+
+    for (let i = 0; i < toolCalls.length; i++) {
+      const call = toolCalls[i];
+      const toolName = call.function.name;
+      const toolArgs = call.function.arguments;
+
+      toolsUsed.push(toolName);
+      console.log(`  → ${toolName}:`, toolArgs);
+
+      updateProgress(
+        20 + (i / toolCalls.length) * 60,
+        `Executing ${toolName} (${i + 1}/${toolCalls.length})...`
+      );
+
+      try {
+        // Execute the tool
+        const toolFunction = tools[toolName];
+        if (!toolFunction) {
+          throw new Error(`Tool not found: ${toolName}`);
+        }
+
+        const toolResult = await toolFunction(toolArgs);
+        console.log(`  ✓ Result:`, toolResult);
+
+        // Add tool result to messages
+        messages.push({
+          role: 'tool',
+          content: toolResult
+        });
+      } catch (error) {
+        console.error(`  ✗ Error:`, error.message);
+
+        // Add error as tool result
+        messages.push({
+          role: 'tool',
+          content: JSON.stringify({ error: error.message })
+        });
+      }
+    }
+
+    hideProgress();
+  }
+
+  // Max iterations reached
+  return {
+    content: "Maximum tool iterations reached. Please try rephrasing your question.",
+    toolsUsed: toolsUsed
+  };
+}
+
+
+/* ============================================================
+   SEND MESSAGE
+============================================================ */
+isProcessing=false;
+async function sendMessage() {
+
+  const userQuestion=messageInput.value.trim();
+
+
+  if (!userQuestion || isProcessing) {
+
+    return;
+  }
+
+
+  isProcessing=true;
+
+  sendButton.disabled=true;
+
+  messageInput.value="";
+
+  // Check if tool mode is enabled
+  const toolModeEnabled = document.getElementById('toolModeToggle').checked;
+
+  statusElement.textContent= toolModeEnabled ? "Processing with tools..." : "Generating explanation...";
+
+
+  addUserMessage(
+    userQuestion
+  );
+
+
+  const assistantDiv =
+    createAssistantMessage();
+
+
+  try {
+
+    // If tool mode is enabled, use tool calling
+    if (toolModeEnabled) {
+      const toolMessages = [
+        {
+          role: "system",
+          content: explanationSystemPrompt
+        },
+        {
+          role: "user",
+          content: userQuestion
+        }
+      ];
+
+      statusElement.textContent = "Using AI tools...";
+
+      const result = await handleToolCalls(toolMessages);
+
+      // Display tools used (if any)
+      if (result.toolsUsed && result.toolsUsed.length > 0) {
+        const toolsDiv = document.createElement("div");
+        toolsDiv.style.cssText = "background: #f0fdf4; border-left: 3px solid #10b981; padding: 10px; margin-bottom: 12px; border-radius: 4px; font-size: 13px; color: #065f46;";
+        toolsDiv.innerHTML = `<strong>🔧 Tools Used:</strong> ${result.toolsUsed.join(', ')}`;
+        assistantDiv.appendChild(toolsDiv);
+      }
+
+      // Display the answer
+      const answerContent = document.createElement("div");
+      answerContent.className = "answer-content";
+      answerContent.textContent = result.content;
+      assistantDiv.appendChild(answerContent);
+
+      // Update conversation memory
+      conversationMemory.push({
+        role: "user",
+        content: userQuestion
+      });
+      conversationMemory.push({
+        role: "assistant",
+        content: result.content
+      });
+
+      // Add like buttons
+      const messageId = assistantDiv.dataset.messageId;
+      if (messageId) {
+        createLikeButtons(assistantDiv, messageId);
+      }
+
+      statusElement.textContent = "Ready";
+
+    } else {
+      // Original flow without tools
+
+      /*
+         STEP 1
+
+         Generate normal explanation.
+
+         THIS MUST NOT use the Formula Extractor prompt.
+      */
+
+      const explanation =await generateExplanation(
+          userQuestion,
+          assistantDiv
+        );
+
+
+    console.log("========== COMPLETED EXPLANATION =========="
+    );
+
+    console.log(explanation);
+
+
+    if (
+      !explanation.trim()
+    ) {
+
+      throw new Error(
+        "Explanation agent returned no content."
+      );
+    }
+
+
+    /*
+       STEP 2
+
+       Extract formulas from the COMPLETED explanation.
+    */
+
+    statusElement.textContent =
+      "Extracting formulas...";
+
+
+    const formulaIR =
+      await extractFormula(
+        explanation
+      );
+
+
+    console.log(
+      "========== FORMULA IR =========="
+    );
+
+    console.log(
+      formulaIR
+    );
+
+
+    /*
+       STEP 3
+
+       Build Formula Tree.
+    */
+
+    statusElement.textContent =
+      "Building formula tree...";
+
+
+    renderFormulaIR(
+      formulaIR,
+      assistantDiv
+    );
+
+
+    statusElement.textContent =
+      "Ready";
+
+    } // End of else block (standard mode)
+
+  } catch (error) {
+
+    console.error(
+      error
+    );
+
+
+    const errorDiv =
+      document.createElement(
+        "div"
+      );
+
+
+    errorDiv.className =
+      "error-display";
+
+
+    errorDiv.textContent =
+      error.message;
+
+
+    assistantDiv.appendChild(
+      errorDiv
+    );
+
+
+    statusElement.textContent =
+      "Error";
+  }
+
+
+  isProcessing =
+    false;
+
+
+  sendButton.disabled =
+    false;
+
+
+  messageInput.focus();
+
+  // Save conversation history after each message
+  saveConversationHistory();
+}
+
+
+/* ============================================================
+   MESSAGE UI
+============================================================ */
+
+function addUserMessage(
+  text
+) {
+
+  const div =
+    document.createElement(
+      "div"
+    );
+
+
+  div.className =
+    "message user";
+
+
+  div.textContent =
+    text;
+
+
+  chatContainer.appendChild(
+    div
+  );
+
+
+  chatContainer.scrollTop =
+    chatContainer.scrollHeight;
+}
+
+
+function createAssistantMessage() {
+
+  const div =
+    document.createElement(
+      "div"
+    );
+
+
+  div.className =
+    "message assistant";
+
+  // Generate unique message ID
+  const messageId = generateMessageId();
+  div.dataset.messageId = messageId;
+
+
+  chatContainer.appendChild(
+    div
+  );
+
+
+  chatContainer.scrollTop =
+    chatContainer.scrollHeight;
+
+
+  return div;
+}
+
+
+function createSystemMessage() {
+  const div = document.createElement("div");
+  div.className = "message system";
+  div.id = "systemMessage";
+
+  const activeConfig = getActiveAgentConfig();
+  const isConversationSpecific = hasConversationConfig();
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "system-header";
+
+  const title = document.createElement("div");
+  title.className = "system-title";
+  const scopeIcon = isConversationSpecific ? "🔧" : "🌐";
+  const scopeText = isConversationSpecific ? "Conversation" : "Global";
+  title.innerHTML = `
+    <span>🤖</span>
+    <span>${activeConfig.name || 'AI Assistant'}</span>
+    <span class="system-badge">${scopeIcon} ${scopeText} Config</span>
+  `;
+
+  const actions = document.createElement("div");
+  actions.className = "system-actions";
+
+  // Toggle scope button
+  const scopeBtn = document.createElement("button");
+  scopeBtn.className = "system-btn";
+  scopeBtn.textContent = isConversationSpecific ? "🌐 Use Global" : "🔧 Customize";
+  scopeBtn.title = isConversationSpecific ?
+    "Revert to global configuration" : "Create conversation-specific configuration";
+  scopeBtn.onclick = () => toggleConfigScope(div);
+
+  const editBtn = document.createElement("button");
+  editBtn.className = "system-btn";
+  editBtn.textContent = "✏️ Edit";
+  editBtn.onclick = () => toggleSystemEditor(div);
+
+  actions.appendChild(scopeBtn);
+  actions.appendChild(editBtn);
+
+  header.appendChild(title);
+  header.appendChild(actions);
+
+  // Content
+  const content = document.createElement("div");
+  content.className = "system-content";
+  content.id = "systemContent";
+
+  // Scope info
+  const scopeInfo = document.createElement("div");
+  scopeInfo.style.fontSize = "12px";
+  scopeInfo.style.color = "#0c4a6e";
+  scopeInfo.style.marginBottom = "12px";
+  scopeInfo.style.padding = "8px";
+  scopeInfo.style.background = "rgba(14, 165, 233, 0.1)";
+  scopeInfo.style.borderRadius = "4px";
+  if (isConversationSpecific) {
+    scopeInfo.innerHTML = "<strong>🔧 Conversation-Specific:</strong> This configuration applies only to this conversation.";
+  } else {
+    scopeInfo.innerHTML = "<strong>🌐 Global:</strong> This configuration applies to all conversations unless customized.";
+  }
+  content.appendChild(scopeInfo);
+
+  // Soul section
+  if (activeConfig.soul) {
+    const soulSection = document.createElement("div");
+    soulSection.className = "system-section";
+
+    const soulTitle = document.createElement("div");
+    soulTitle.className = "system-section-title";
+    soulTitle.textContent = "🎭 Soul / Personality";
+
+    const soulText = document.createElement("div");
+    soulText.textContent = activeConfig.soul;
+
+    soulSection.appendChild(soulTitle);
+    soulSection.appendChild(soulText);
+    content.appendChild(soulSection);
+  }
+
+  // System instructions section
+  if (activeConfig.systemInstructions) {
+    const instructionsSection = document.createElement("div");
+    instructionsSection.className = "system-section";
+
+    const instructionsTitle = document.createElement("div");
+    instructionsTitle.className = "system-section-title";
+    instructionsTitle.textContent = "⚙️ System Instructions";
+
+    const instructionsText = document.createElement("div");
+    instructionsText.textContent = activeConfig.systemInstructions;
+
+    instructionsSection.appendChild(instructionsTitle);
+    instructionsSection.appendChild(instructionsText);
+    content.appendChild(instructionsSection);
+  }
+
+  // Editor (initially hidden)
+  const editor = document.createElement("div");
+  editor.className = "system-editor";
+  editor.id = "systemEditor";
+
+  const soulLabel = document.createElement("div");
+  soulLabel.className = "system-section-title";
+  soulLabel.textContent = "🎭 Soul / Personality";
+  soulLabel.style.marginBottom = "8px";
+
+  const soulTextarea = document.createElement("textarea");
+  soulTextarea.className = "system-textarea";
+  soulTextarea.id = "systemSoulEdit";
+  soulTextarea.placeholder = "Define the personality and tone...";
+  soulTextarea.value = activeConfig.soul || '';
+  soulTextarea.style.marginBottom = "16px";
+  soulTextarea.style.minHeight = "80px";
+
+  const instructionsLabel = document.createElement("div");
+  instructionsLabel.className = "system-section-title";
+  instructionsLabel.textContent = "⚙️ System Instructions";
+  instructionsLabel.style.marginBottom = "8px";
+
+  const instructionsTextarea = document.createElement("textarea");
+  instructionsTextarea.className = "system-textarea";
+  instructionsTextarea.id = "systemInstructionsEdit";
+  instructionsTextarea.placeholder = "Define the behavior and capabilities...";
+  instructionsTextarea.value = activeConfig.systemInstructions || '';
+  instructionsTextarea.style.minHeight = "120px";
+
+  const editorActions = document.createElement("div");
+  editorActions.className = "system-editor-actions";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "system-btn";
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.onclick = () => toggleSystemEditor(div, false);
+
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "system-btn";
+  saveBtn.textContent = "💾 Save Changes";
+  saveBtn.style.background = "#0ea5e9";
+  saveBtn.style.color = "white";
+  saveBtn.onclick = () => saveSystemFromInline(div);
+
+  editorActions.appendChild(cancelBtn);
+  editorActions.appendChild(saveBtn);
+
+  editor.appendChild(soulLabel);
+  editor.appendChild(soulTextarea);
+  editor.appendChild(instructionsLabel);
+  editor.appendChild(instructionsTextarea);
+  editor.appendChild(editorActions);
+
+  div.appendChild(header);
+  div.appendChild(content);
+  div.appendChild(editor);
+
+  return div;
+}
+
+function toggleConfigScope(messageDiv) {
+  const isCurrentlyConversationSpecific = hasConversationConfig();
+
+  if (isCurrentlyConversationSpecific) {
+    // Revert to global
+    if (confirm("Revert to global configuration? This conversation will use the global agent settings.")) {
+      clearConversationAgentConfig();
+
+      // Update conversation memory
+      conversationMemory[0] = {
+        role: "system",
+        content: getCombinedSystemPrompt()
+      };
+
+      // Rebuild system message
+      addSystemMessageToChat();
+      statusElement.textContent = "Reverted to global configuration";
+    }
+  } else {
+    // Create conversation-specific config by copying global
+    const newConfig = { ...globalAgentConfig };
+    saveConversationAgentConfig(newConfig);
+
+    // Update conversation memory
+    conversationMemory[0] = {
+      role: "system",
+      content: getCombinedSystemPrompt()
+    };
+
+    // Rebuild system message
+    addSystemMessageToChat();
+    statusElement.textContent = "Created conversation-specific configuration";
+  }
+}
+
+function toggleSystemEditor(messageDiv, show) {
+  const content = messageDiv.querySelector("#systemContent");
+  const editor = messageDiv.querySelector("#systemEditor");
+  const buttons = messageDiv.querySelectorAll(".system-btn");
+  const editBtn = buttons[buttons.length - 1]; // Last button is edit
+
+  if (show === undefined) {
+    show = !editor.classList.contains("active");
+  }
+
+  if (show) {
+    content.style.display = "none";
+    editor.classList.add("active");
+    editBtn.textContent = "👁️ View";
+  } else {
+    content.style.display = "block";
+    editor.classList.remove("active");
+    editBtn.textContent = "✏️ Edit";
+  }
+}
+
+function saveSystemFromInline(messageDiv) {
+  const soulTextarea = document.getElementById("systemSoulEdit");
+  const instructionsTextarea = document.getElementById("systemInstructionsEdit");
+
+  const activeConfig = getActiveAgentConfig();
+  const newConfig = {
+    ...activeConfig,
+    soul: soulTextarea.value.trim(),
+    systemInstructions: instructionsTextarea.value.trim()
+  };
+
+  // Always save as conversation-specific when editing inline
+  const isConversationSpecific = true;
+
+  if (saveAgentConfig(newConfig, isConversationSpecific)) {
+    // Update the system message in conversation memory
+    conversationMemory[0] = {
+      role: "system",
+      content: getCombinedSystemPrompt()
+    };
+
+    // Update the display
+    updateSystemMessageDisplay();
+    toggleSystemEditor(messageDiv, false);
+
+    const scope = hasConversationConfig() ? "conversation-specific" : "global";
+    statusElement.textContent = `Agent configuration updated (${scope})`;
+    console.log("✅ System instruction updated from inline editor");
+  } else {
+    alert("Failed to save agent configuration");
+  }
+}
+
+function updateSystemMessageDisplay() {
+  const systemMessage = document.getElementById("systemMessage");
+  if (!systemMessage) return;
+
+  const content = systemMessage.querySelector("#systemContent");
+  const title = systemMessage.querySelector(".system-title");
+  const actions = systemMessage.querySelector(".system-actions");
+
+  const activeConfig = getActiveAgentConfig();
+  const isConversationSpecific = hasConversationConfig();
+  const scopeIcon = isConversationSpecific ? "🔧" : "🌐";
+  const scopeText = isConversationSpecific ? "Conversation" : "Global";
+
+  // Update title
+  title.innerHTML = `
+    <span>🤖</span>
+    <span>${activeConfig.name || 'AI Assistant'}</span>
+    <span class="system-badge">${scopeIcon} ${scopeText} Config</span>
+  `;
+
+  // Update scope button
+  const buttons = actions.querySelectorAll(".system-btn");
+  const scopeBtn = buttons[0];
+  if (scopeBtn) {
+    scopeBtn.textContent = isConversationSpecific ? "🌐 Use Global" : "🔧 Customize";
+    scopeBtn.title = isConversationSpecific ?
+      "Revert to global configuration" : "Create conversation-specific configuration";
+  }
+
+  // Update content
+  content.innerHTML = "";
+
+  // Scope info
+  const scopeInfo = document.createElement("div");
+  scopeInfo.style.fontSize = "12px";
+  scopeInfo.style.color = "#0c4a6e";
+  scopeInfo.style.marginBottom = "12px";
+  scopeInfo.style.padding = "8px";
+  scopeInfo.style.background = "rgba(14, 165, 233, 0.1)";
+  scopeInfo.style.borderRadius = "4px";
+  if (isConversationSpecific) {
+    scopeInfo.innerHTML = "<strong>🔧 Conversation-Specific:</strong> This configuration applies only to this conversation.";
+  } else {
+    scopeInfo.innerHTML = "<strong>🌐 Global:</strong> This configuration applies to all conversations unless customized.";
+  }
+  content.appendChild(scopeInfo);
+
+  // Soul section
+  if (activeConfig.soul) {
+    const soulSection = document.createElement("div");
+    soulSection.className = "system-section";
+
+    const soulTitle = document.createElement("div");
+    soulTitle.className = "system-section-title";
+    soulTitle.textContent = "🎭 Soul / Personality";
+
+    const soulText = document.createElement("div");
+    soulText.textContent = activeConfig.soul;
+
+    soulSection.appendChild(soulTitle);
+    soulSection.appendChild(soulText);
+    content.appendChild(soulSection);
+  }
+
+  // System instructions section
+  if (activeConfig.systemInstructions) {
+    const instructionsSection = document.createElement("div");
+    instructionsSection.className = "system-section";
+
+    const instructionsTitle = document.createElement("div");
+    instructionsTitle.className = "system-section-title";
+    instructionsTitle.textContent = "⚙️ System Instructions";
+
+    const instructionsText = document.createElement("div");
+    instructionsText.textContent = activeConfig.systemInstructions;
+
+    instructionsSection.appendChild(instructionsTitle);
+    instructionsSection.appendChild(instructionsText);
+    content.appendChild(instructionsSection);
+  }
+
+  // Update editor values
+  const soulEdit = document.getElementById("systemSoulEdit");
+  const instructionsEdit = document.getElementById("systemInstructionsEdit");
+  if (soulEdit) soulEdit.value = activeConfig.soul || '';
+  if (instructionsEdit) instructionsEdit.value = activeConfig.systemInstructions || '';
+}
+
+
+/* ============================================================
+   EVENTS
+============================================================ */
+
+sendButton.addEventListener(
+  "click",
+  sendMessage
+);
+
+
+messageInput.addEventListener(
+  "keydown",
+  event => {
+
+    if (
+      event.key === "Enter"
+    ) {
+
+      event.preventDefault();
+
+      sendMessage();
+    }
+  }
+);
+
+
+// Tool mode toggle event listener
+document.getElementById('toolModeToggle').addEventListener('change', (event) => {
+  const modeIndicator = document.getElementById('modeIndicator');
+  if (event.target.checked) {
+    modeIndicator.textContent = '🔧 Tool Mode';
+    modeIndicator.style.color = '#10b981';
+    console.log('✅ Tool calling mode ENABLED');
+    console.log('Available tools:', Object.keys(tools));
+  } else {
+    modeIndicator.textContent = 'Standard Mode';
+    modeIndicator.style.color = 'inherit';
+    console.log('Standard mode enabled');
+  }
+});
+
+
+/* ============================================================
+   STARTUP
+============================================================ */
+
+// Load conversation history on startup
+window.addEventListener("DOMContentLoaded", () => {
+  console.log("🚀 DOMContentLoaded - Initializing app...");
+
+  // Show initial loading
+  showProgress("Initializing app...");
+
+  setTimeout(() => {
+    // Load agent configuration first
+    updateProgress(30, "Loading agent configuration...");
+    loadAgentConfig();
+
+    updateProgress(50, "Loading conversation history...");
+    const loaded = loadConversationHistory();
+    if (loaded) {
+      console.log("Previous conversation restored");
+      statusElement.textContent = "Previous conversation restored";
+    } else {
+      console.log("No previous conversation to restore");
+      // Add system message for new conversations
+      addSystemMessageToChat();
+      hideProgress();
+    }
+
+    // Log tool availability
+    console.log('📋 Tool Calling System Initialized');
+    console.log(`   Available tools: ${Object.keys(tools).length}`);
+    console.log(`   Tools:`, Object.keys(tools).join(', '));
+    console.log('   Toggle "🔧 Tools" in header to enable tool calling mode');
+
+    // Log agent configuration
+    console.log('🤖 Agent Configuration:');
+    console.log(`   Name: ${currentAgentConfig.name}`);
+    console.log(`   Soul: ${currentAgentConfig.soul?.substring(0, 50)}...`);
+  }, 100);
+});
+
+// Save before page unload
+window.addEventListener("beforeunload", () => {
+  saveConversationHistory();
+  saveAgentConfig(currentAgentConfig);
+});
+
+messageInput.focus();
+
+
+/* ============================================================
+   TRAINING MODAL FUNCTIONALITY
+============================================================ */
+
+let trainingModel = null;
+let trainingTokenizer = null;
+let isTraining = false;
+let trainingCancelled = false;
+
+const trainingModal = document.getElementById('trainingModal');
+const trainingModalClose = document.getElementById('trainingModalClose');
+const trainingCancelBtn = document.getElementById('trainingCancelBtn');
+const startTrainingBtn = document.getElementById('startTrainingBtn');
+const stopTrainingBtn = document.getElementById('stopTrainingBtn');
+const trainModelBtn = document.getElementById('trainModelBtn');
+const trainingLog = document.getElementById('trainingLog');
+const trainingStats = document.getElementById('trainingStats');
+const trainingProgressBar = document.getElementById('trainingProgressBar');
+const trainingProgressFill = document.getElementById('trainingProgressFill');
+const testOutputSection = document.getElementById('testOutputSection');
+const testModelBtn = document.getElementById('testModelBtn');
+const testOutput = document.getElementById('testOutput');
+
+// Open training modal
+trainModelBtn.addEventListener('click', () => {
+  trainingModal.classList.add('active');
+  menuOverlay.classList.remove('active');
+  sideMenu.classList.remove('open');
+  hamburgerBtn.classList.remove('active');
+});
+
+// Close training modal
+trainingModalClose.addEventListener('click', () => {
+  if (isTraining) {
+    if (confirm('Training is in progress. Are you sure you want to close?')) {
+      trainingCancelled = true;
+      trainingModal.classList.remove('active');
+    }
+  } else {
+    trainingModal.classList.remove('active');
+  }
+});
+
+trainingCancelBtn.addEventListener('click', () => {
+  if (isTraining) {
+    if (confirm('Training is in progress. Are you sure you want to close?')) {
+      trainingCancelled = true;
+      trainingModal.classList.remove('active');
+    }
+  } else {
+    trainingModal.classList.remove('active');
+  }
+});
+
+// Collect training data
+function collectTrainingData() {
+  const dataSource = document.querySelector('input[name="trainingDataSource"]:checked').value;
+  let trainingTexts = [];
+
+  // Collect from conversation memory (assistant messages only)
+  for (const msg of conversationMemory) {
+    if (msg.role === 'assistant') {
+      // Check if we should include this message
+      if (dataSource === 'responses') {
+        trainingTexts.push(msg.content);
+      } else if (dataSource === 'liked') {
+        // For liked responses, we need to check if it exists in DOM and has likes
+        // This is simplified - in production, you'd want to store likes metadata
+        trainingTexts.push(msg.content);
+      }
+    }
+  }
+
+  // If no data from memory, try to collect from DOM
+  if (trainingTexts.length === 0) {
+    const assistantMessages = document.querySelectorAll('.message.assistant');
+    assistantMessages.forEach(msgDiv => {
+      if (dataSource === 'liked') {
+        // Check if any like button is active
+        const activeLike = msgDiv.querySelector('.like-button.active');
+        if (activeLike) {
+          const text = msgDiv.textContent.replace(/^(Thinking:|Answer:)/gm, '').trim();
+          if (text) trainingTexts.push(text);
+        }
+      } else {
+        const text = msgDiv.textContent.replace(/^(Thinking:|Answer:)/gm, '').trim();
+        if (text) trainingTexts.push(text);
+      }
+    });
+  }
+
+  // Combine all texts
+  const combinedText = trainingTexts.join('\n\n');
+  return combinedText;
+}
+
+// Add log message
+function addTrainingLog(message, type = 'info') {
+  const timestamp = new Date().toLocaleTimeString();
+  let prefix = '›';
+  if (type === 'success') prefix = '✓';
+  if (type === 'error') prefix = '✗';
+  if (type === 'info') prefix = 'ℹ';
+
+  const logLine = `[${timestamp}] ${prefix} ${message}\n`;
+  trainingLog.textContent += logLine;
+  trainingLog.scrollTop = trainingLog.scrollHeight;
+}
+
+// Update training stats
+function updateTrainingStats(epoch, loss, vocabSize, dataSize) {
+  document.getElementById('statEpoch').textContent = epoch;
+  document.getElementById('statLoss').textContent = loss.toFixed(4);
+  document.getElementById('statVocab').textContent = vocabSize;
+  document.getElementById('statDataSize').textContent = dataSize;
+}
+
+// Update progress
+function updateTrainingProgress(percent) {
+  trainingProgressFill.style.width = percent + '%';
+}
+
+// Start training
+startTrainingBtn.addEventListener('click', async () => {
+  try {
+    // Get configuration
+    const epochs = parseInt(document.getElementById('trainingEpochs').value);
+    const learningRate = parseFloat(document.getElementById('trainingLearningRate').value);
+    const hiddenSize = parseInt(document.getElementById('trainingHiddenSize').value);
+    const logInterval = parseInt(document.getElementById('trainingLogInterval').value);
+
+    // Validate
+    if (isNaN(epochs) || epochs < 1) {
+      alert('Please enter a valid number of epochs (minimum 1)');
+      return;
+    }
+    if (isNaN(learningRate) || learningRate <= 0) {
+      alert('Please enter a valid learning rate (greater than 0)');
+      return;
+    }
+    if (isNaN(hiddenSize) || hiddenSize < 8) {
+      alert('Please enter a valid hidden size (minimum 8)');
+      return;
+    }
+
+    // Collect data
+    addTrainingLog('Collecting training data...', 'info');
+    const trainingData = collectTrainingData();
+
+    if (!trainingData || trainingData.trim().length === 0) {
+      alert('No training data available. Please have some conversations with Ollama first.');
+      addTrainingLog('No training data found!', 'error');
+      return;
+    }
+
+    addTrainingLog(`Collected ${trainingData.length} characters of training data`, 'success');
+
+    // Initialize tokenizer
+    addTrainingLog('Building tokenizer...', 'info');
+    trainingTokenizer = new LLMTokenizer(trainingData);
+    addTrainingLog(`Vocabulary size: ${trainingTokenizer.vocabSize} unique characters`, 'success');
+
+    // Initialize model
+    addTrainingLog(`Initializing model with hidden size ${hiddenSize}...`, 'info');
+    trainingModel = new VanillaLLM(trainingTokenizer.vocabSize, hiddenSize);
+    addTrainingLog('Model initialized successfully', 'success');
+
+    // Prepare training data
+    const fullTokens = trainingTokenizer.encode(trainingData);
+    const inputs = fullTokens.slice(0, -1);
+    const targets = fullTokens.slice(1);
+
+    addTrainingLog(`Prepared ${inputs.length} training pairs`, 'success');
+
+    // Update UI
+    isTraining = true;
+    trainingCancelled = false;
+    startTrainingBtn.style.display = 'none';
+    stopTrainingBtn.style.display = 'inline-block';
+    trainingLog.style.display = 'block';
+    trainingStats.style.display = 'grid';
+    trainingProgressBar.style.display = 'block';
+    testOutputSection.style.display = 'none';
+
+    updateTrainingStats(0, 0, trainingTokenizer.vocabSize, trainingData.length);
+
+    // Test before training
+    addTrainingLog('Testing model before training...', 'info');
+    const seedChar = trainingData.charAt(0);
+    const beforeText = generateText(trainingModel, trainingTokenizer, seedChar, 20);
+    addTrainingLog(`Before: "${beforeText}"`, 'info');
+
+    addTrainingLog(`Starting training for ${epochs} epochs...`, 'info');
+    addTrainingLog('─'.repeat(50), 'info');
+
+    // Training loop
+    for (let epoch = 1; epoch <= epochs; epoch++) {
+      if (trainingCancelled) {
+        addTrainingLog('Training cancelled by user', 'error');
+        break;
+      }
+
+      const currentLoss = trainStep(trainingModel, inputs, targets, learningRate);
+
+      // Update stats and progress
+      const progress = (epoch / epochs) * 100;
+      updateTrainingProgress(progress);
+      updateTrainingStats(epoch, currentLoss, trainingTokenizer.vocabSize, trainingData.length);
+
+      // Log progress
+      if (epoch % logInterval === 0) {
+        addTrainingLog(`Epoch ${epoch}/${epochs} | Loss: ${currentLoss.toFixed(4)}`, 'success');
+      }
+
+      // Allow UI to update
+      if (epoch % 10 === 0) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
+    }
+
+    if (!trainingCancelled) {
+      addTrainingLog('─'.repeat(50), 'info');
+      addTrainingLog('Training complete!', 'success');
+
+      // Test after training
+      addTrainingLog('Testing model after training...', 'info');
+      const afterText = generateText(trainingModel, trainingTokenizer, seedChar, 20);
+      addTrainingLog(`After: "${afterText}"`, 'success');
+
+      // Show test section
+      testOutputSection.style.display = 'block';
+      document.getElementById('testSeedText').value = seedChar;
+    }
+
+  } catch (error) {
+    addTrainingLog(`Error: ${error.message}`, 'error');
+    console.error('Training error:', error);
+  } finally {
+    isTraining = false;
+    startTrainingBtn.style.display = 'inline-block';
+    stopTrainingBtn.style.display = 'none';
+  }
+});
+
+// Stop training
+stopTrainingBtn.addEventListener('click', () => {
+  if (confirm('Are you sure you want to stop training?')) {
+    trainingCancelled = true;
+    addTrainingLog('Stopping training...', 'info');
+  }
+});
+
+// Test model
+testModelBtn.addEventListener('click', () => {
+  if (!trainingModel || !trainingTokenizer) {
+    alert('Please train the model first!');
+    return;
+  }
+
+  const seedText = document.getElementById('testSeedText').value;
+  const genLength = parseInt(document.getElementById('testGenLength').value);
+
+  if (!seedText) {
+    alert('Please enter seed text');
+    return;
+  }
+
+  if (isNaN(genLength) || genLength < 1) {
+    alert('Please enter a valid generation length');
+    return;
+  }
+
+  try {
+    addTrainingLog(`Generating text from seed: "${seedText}"`, 'info');
+    const generated = generateText(trainingModel, trainingTokenizer, seedText, genLength);
+
+    testOutput.textContent = generated;
+    testOutput.style.display = 'block';
+
+    addTrainingLog(`Generated: "${generated}"`, 'success');
+  } catch (error) {
+    addTrainingLog(`Generation error: ${error.message}`, 'error');
+    alert(`Error: ${error.message}`);
+  }
+});
+
+</script>
+
+</body>
+</html>
