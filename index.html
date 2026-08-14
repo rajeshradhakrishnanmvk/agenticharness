@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <title>AI Formula Builder</title>
+  <title>AI Agentic Grid</title>
 
   <!-- Ollama Cache Module -->
   <script >
@@ -194,193 +194,6 @@ const OllamaCache = (() => {
             Array.from({ length: cols }, () => (Math.random() - 0.5) * Math.sqrt(2 / cols))
           )
         };
-
-    class LLMTokenizer {
-      constructor(text) {
-        // Extract unique characters to build vocabulary
-        this.vocab = [...new Set(text)].sort();
-        this.vocabSize = this.vocab.length;
-        
-        // Create lookup maps
-        this.charToInt = new Map(this.vocab.map((ch, i) => [ch, i]));
-        this.intToChar = new Map(this.vocab.map((ch, i) => [i, ch]));
-      }
-
-      encode(text) {
-        return [...text].map(ch => this.charToInt.get(ch) || 0);
-      }
-
-      decode(tokens) {
-        return tokens.map(t => this.intToChar.get(t) || '').join('');
-      }
-    }
-    class VanillaLLM {
-      constructor(vocabSize, hiddenSize = 16) {
-        this.vocabSize = vocabSize;
-        this.hiddenSize = hiddenSize;
-
-        // Initialize weights
-        this.W_xh = MathEngine.randomWeights(hiddenSize, vocabSize);  // Input to hidden
-        this.W_hh = MathEngine.randomWeights(hiddenSize, hiddenSize); // Hidden to hidden
-        this.W_hy = MathEngine.randomWeights(vocabSize, hiddenSize);  // Hidden to output
-        
-        // Biases
-        this.b_h = new Array(hiddenSize).fill(0);
-        this.b_y = new Array(vocabSize).fill(0);
-      }
-
-      // Forward pass through the network for a single step
-      forwardStep(inputTokenIndex, prevHidden) {
-        // 1. One-hot encode the input token index
-        const x = new Array(this.vocabSize).fill(0);
-        x[inputTokenIndex] = 1;
-
-        // 2. Compute raw hidden state values
-        const hInX = MathEngine.matMulVec(this.W_xh, x);
-        const hInH = MathEngine.matMulVec(this.W_hh, prevHidden);
-        
-        // 3. Apply Tanh activation function for hidden layer memory
-        const nextHidden = hInX.map((val, i) => Math.tanh(val + hInH[i] + this.b_h[i]));
-
-        // 4. Compute output logits
-        const yLogits = MathEngine.matMulVec(this.W_hy, nextHidden).map((val, i) => val + this.b_y[i]);
-        
-        // 5. Turn raw scores into relative probabilities
-        const probabilities = MathEngine.softmax(yLogits);
-
-        return { probabilities, nextHidden };
-      }
-    }
-    function generateText(model, tokenizer, seedText, length = 20) {
-      let tokens = tokenizer.encode(seedText);
-      let currentHidden = new Array(model.hiddenSize).fill(0);
-
-      // Warm up the hidden state context with the seed text
-      for (let i = 0; i < tokens.length - 1; i++) {
-        const step = model.forwardStep(tokens[i], currentHidden);
-        currentHidden = step.nextHidden;
-      }
-
-      let outputTokens = [...tokens];
-      let lastToken = tokens[tokens.length - 1];
-
-      // Predict future tokens one by one
-      for (let i = 0; i < length; i++) {
-        const { probabilities, nextHidden } = model.forwardStep(lastToken, currentHidden);
-        currentHidden = nextHidden;
-
-        // Sample from probability distribution
-        const nextToken = sampleFromDistribution(probabilities);
-        outputTokens.push(nextToken);
-        lastToken = nextToken;
-      }
-
-      return tokenizer.decode(outputTokens);
-    }
-
-    // Helper to select index based on random probability weights
-    function sampleFromDistribution(probs) {
-      const r = Math.random();
-      let sum = 0;
-      for (let i = 0; i < probs.length; i++) {
-        sum += probs[i];
-        if (r <= sum) return i;
-      }
-      return probs.length - 1;
-    }
-    // Function to train the model on a single sequence of tokens
-    function trainStep(model, inputs, targets, learningRate = 0.01) {
-      const hiddenStates = { '-1': new Array(model.hiddenSize).fill(0) };
-      const probabilities = [];
-      let loss = 0;
-
-      // --- 1. FORWARD PASS ---
-      // Store all intermediate steps so we can use them to calculate derivatives later
-      for (let t = 0; t < inputs.length; t++) {
-        const step = model.forwardStep(inputs[t], hiddenStates[t - 1]);
-        hiddenStates[t] = step.nextHidden;
-        probabilities[t] = step.probabilities;
-
-        // Accumulate Cross-Entropy Loss (-log of target character probability)
-        loss -= Math.log(Math.max(probabilities[t][targets[t]], 1e-15));
-      }
-
-      // Initialize gradient matrices with zeros
-      const dW_xh = model.W_xh.map(row => row.map(() => 0));
-      const dW_hh = model.W_hh.map(row => row.map(() => 0));
-      const dW_hy = model.W_hy.map(row => row.map(() => 0));
-      const db_h = new Array(model.hiddenSize).fill(0);
-      const db_y = new Array(model.vocabSize).fill(0);
-      let dh_next = new Array(model.hiddenSize).fill(0);
-
-      // --- 2. BACKPROPAGATION THROUGH TIME (BPTT) ---
-      // Loop backwards through time from the final character to the first character
-      for (let t = inputs.length - 1; t >= 0; t--) {
-        // Gradient of loss with respect to output logits (y_pred - y_true)
-        const dy = [...probabilities[t]];
-        dy[targets[t]] -= 1; 
-
-        // Gradients for output layer weights and biases
-        for (let i = 0; i < model.vocabSize; i++) {
-          db_y[i] += dy[i];
-          for (let j = 0; j < model.hiddenSize; j++) {
-            dW_hy[i][j] += dy[i] * hiddenStates[t][j];
-          }
-        }
-
-        // Gradient flowing back into the hidden state memory
-        const dh = new Array(model.hiddenSize).fill(0);
-        for (let j = 0; j < model.hiddenSize; j++) {
-          for (let i = 0; i < model.vocabSize; i++) {
-            dh[j] += model.W_hy[i][j] * dy[i];
-          }
-          dh[j] += dh_next[j]; // Include context from future steps
-        }
-
-        // Gradient through the Tanh activation function derivative: (1 - h^2)
-        const dh_raw = new Array(model.hiddenSize).fill(0);
-        for (let j = 0; j < model.hiddenSize; j++) {
-          dh_raw[j] = (1 - hiddenStates[t][j] * hiddenStates[t][j]) * dh[j];
-        }
-
-        // Gradients for input and recurrent weights
-        for (let i = 0; i < model.hiddenSize; i++) {
-          db_h[i] += dh_raw[i];
-          // Input weights
-          dW_xh[i][inputs[t]] += dh_raw[i]; // (Since input x is a one-hot vector)
-          // Hidden recurrent weights
-          for (let j = 0; j < model.hiddenSize; j++) {
-            dW_hh[i][j] += dh_raw[i] * hiddenStates[t - 1][j];
-          }
-        }
-
-        // Save hidden state gradient for the preceding time step (t-1)
-        dh_next = new Array(model.hiddenSize).fill(0);
-        for (let j = 0; j < model.hiddenSize; j++) {
-          for (let i = 0; i < model.hiddenSize; i++) {
-            dh_next[j] += model.W_hh[i][j] * dh_raw[i];
-          }
-        }
-      }
-
-      // --- 3. WEIGHT UPDATES (Optimization Step) ---
-      // Clip explosive gradients to prevent network crash
-      const clipValue = 5;
-      const clip = (val) => Math.max(-clipValue, Math.min(clipValue, val));
-
-      for (let i = 0; i < model.hiddenSize; i++) {
-        model.b_h[i] -= learningRate * clip(db_h[i]);
-        for (let j = 0; j < model.vocabSize; j++) model.W_xh[i][j] -= learningRate * clip(dW_xh[i][j]);
-        for (let j = 0; j < model.hiddenSize; j++) model.W_hh[i][j] -= learningRate * clip(dW_hh[i][j]);
-      }
-      for (let i = 0; i < model.vocabSize; i++) {
-        model.b_y[i] -= learningRate * clip(db_y[i]);
-        for (let j = 0; j < model.hiddenSize; j++) model.W_hy[i][j] -= learningRate * clip(dW_hy[i][j]);
-      }
-
-      return loss / inputs.length;
-    }
-
   </script>
   <style>
     * {
@@ -401,9 +214,115 @@ const OllamaCache = (() => {
       background: #f5f7fb;
       color: #1f2937;
       height: 100vh;
+      overflow: hidden;
 
       display: flex;
       flex-direction: column;
+    }
+
+    /* --------------------------------------------------
+       MAIN CONTENT AREA (Split View)
+    -------------------------------------------------- */
+
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      position: relative;
+    }
+
+    /* Frozen Grid Section */
+    .grid-section {
+      background: #f9fafb;
+      border-bottom: 2px solid #e5e7eb;
+      padding: 16px 24px 12px 24px;
+      max-height: 45vh;
+      overflow-y: auto;
+      flex-shrink: 0;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+      position: relative;
+      transition: max-height 0.3s ease;
+    }
+
+    .grid-section.collapsed {
+      max-height: 0;
+      padding: 0;
+      overflow: hidden;
+      border-bottom: none;
+    }
+
+    .grid-toggle-btn {
+      position: absolute;
+      top: 8px;
+      right: 24px;
+      background: white;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #374151;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+      z-index: 100;
+    }
+
+    .grid-toggle-btn:hover {
+      background: #f3f4f6;
+      border-color: #9ca3af;
+    }
+
+    .grid-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+      padding-right: 100px;
+    }
+
+    .grid-section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1f2937;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    /* Resize Handle */
+    .resize-handle {
+      height: 8px;
+      background: linear-gradient(to bottom, transparent 0%, #e5e7eb 50%, transparent 100%);
+      cursor: ns-resize;
+      position: relative;
+      flex-shrink: 0;
+      transition: background 0.2s ease;
+    }
+
+    .resize-handle:hover {
+      background: linear-gradient(to bottom, transparent 0%, #9ca3af 50%, transparent 100%);
+    }
+
+    .resize-handle::before {
+      content: '⋮⋮⋮';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: #9ca3af;
+      font-size: 10px;
+      letter-spacing: 2px;
+    }
+
+    /* Scrollable Chat Section */
+    .chat-section {
+      flex: 1;
+      overflow-y: auto;
+      position: relative;
     }
 
     /* --------------------------------------------------
@@ -553,14 +472,11 @@ const OllamaCache = (() => {
     -------------------------------------------------- */
 
     .chat-container {
-      flex: 1;
-      overflow-y: auto;
-
       padding: 24px;
-
       display: flex;
       flex-direction: column;
       gap: 16px;
+      min-height: 100%;
     }
 
     .message {
@@ -734,6 +650,21 @@ const OllamaCache = (() => {
       border-top: 1px solid #f3f4f6;
       justify-content: flex-start;
       align-items: center;
+      max-height: 100px;
+      overflow: hidden;
+      opacity: 1;
+      transition: max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1),
+                  opacity 0.3s ease,
+                  padding 0.3s ease,
+                  margin 0.3s ease;
+    }
+
+    .like-button-container.collapsed {
+      max-height: 0;
+      opacity: 0;
+      margin-top: 0;
+      padding-top: 0;
+      border-top: none;
     }
 
     .like-button {
@@ -834,6 +765,35 @@ const OllamaCache = (() => {
       color: #1f2937;
     }
 
+    .like-toggle-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+      color: #6b7280;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.2s ease;
+      user-select: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .like-toggle-btn:hover {
+      background: #f3f4f6;
+      color: #374151;
+    }
+
+    .like-toggle-icon {
+      display: inline-block;
+      transition: transform 0.3s ease;
+    }
+
+    .like-toggle-btn.collapsed .like-toggle-icon {
+      transform: rotate(-90deg);
+    }
+
     /* --------------------------------------------------
        THINKING
     -------------------------------------------------- */
@@ -871,6 +831,35 @@ const OllamaCache = (() => {
     .answer-content {
       white-space: pre-wrap;
       word-break: break-word;
+    }
+
+    /* --------------------------------------------------
+       BLINKING CURSOR
+    -------------------------------------------------- */
+
+    .typing-cursor {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      background: #2563eb;
+      margin-left: 1px;
+      animation: blink 0.8s infinite;
+      vertical-align: baseline;
+      position: relative;
+      top: 0.1em;
+    }
+
+    @keyframes blink {
+      0%, 49% {
+        opacity: 1;
+      }
+      50%, 100% {
+        opacity: 0;
+      }
+    }
+
+    .typing-cursor.hidden {
+      display: none;
     }
 
     /* --------------------------------------------------
@@ -930,57 +919,6 @@ const OllamaCache = (() => {
       cursor: not-allowed;
     }
 
-    /* --------------------------------------------------
-       FORMULA SECTION
-    -------------------------------------------------- */
-
-    .formula-section {
-      margin-top: 20px;
-
-      background: white;
-
-      border: 1px solid #dbe2ea;
-      border-radius: 10px;
-
-      padding: 18px;
-    }
-
-    .formula-header {
-      font-size: 18px;
-      font-weight: 700;
-
-      color: #111827;
-
-      margin-bottom: 12px;
-    }
-
-    .formula-subheader {
-      font-size: 14px;
-      font-weight: 600;
-
-      margin-top: 18px;
-      margin-bottom: 8px;
-
-      color: #374151;
-    }
-
-    .formula-list {
-      background: #111827;
-      color: #e5e7eb;
-
-      border-radius: 8px;
-
-      padding: 14px;
-
-      font-family: Consolas, Monaco, monospace;
-      font-size: 14px;
-
-      overflow-x: auto;
-    }
-
-    .formula-item {
-      padding: 5px 0;
-    }
 
     /* --------------------------------------------------
        VARIABLES
@@ -1091,44 +1029,6 @@ const OllamaCache = (() => {
       overflow-x: auto;
     }
 
-    .tree-formula {
-      margin-bottom: 20px;
-    }
-
-    .tree-root {
-      color: white;
-      font-weight: 700;
-      margin-bottom: 5px;
-    }
-
-    .tree-node {
-      margin-left: 22px;
-      padding: 2px 0;
-
-      position: relative;
-    }
-
-    .tree-node::before {
-      content: "└─ ";
-      color: #6b7280;
-    }
-
-    .tree-operator {
-      color: #60a5fa;
-      font-weight: 700;
-    }
-
-    .tree-variable {
-      color: #34d399;
-    }
-
-    .tree-number {
-      color: #fbbf24;
-    }
-
-    .tree-function {
-      color: #c084fc;
-    }
 
     /* --------------------------------------------------
        JSON
@@ -1268,7 +1168,7 @@ const OllamaCache = (() => {
        HISTORY MODAL & AGENT MODAL
     -------------------------------------------------- */
 
-    .history-modal, .agent-modal, .training-modal {
+    .history-modal, .agent-modal {
       position: fixed;
       top: 0;
       left: 0;
@@ -1281,11 +1181,11 @@ const OllamaCache = (() => {
       z-index: 2000;
     }
 
-    .history-modal.active, .agent-modal.active, .training-modal.active {
+    .history-modal.active, .agent-modal.active {
       display: flex;
     }
 
-    .history-modal-content, .agent-modal-content, .training-modal-content {
+    .history-modal-content, .agent-modal-content {
       background: white;
       border-radius: 12px;
       padding: 24px;
@@ -1296,11 +1196,11 @@ const OllamaCache = (() => {
       box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
     }
 
-    .agent-modal-content, .training-modal-content {
+    .agent-modal-content {
       max-width: 800px;
     }
 
-    .history-modal-header, .agent-modal-header, .training-modal-header {
+    .history-modal-header, .agent-modal-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -1309,13 +1209,13 @@ const OllamaCache = (() => {
       border-bottom: 2px solid #e5e7eb;
     }
 
-    .history-modal-title, .agent-modal-title, .training-modal-title {
+    .history-modal-title, .agent-modal-title {
       font-size: 20px;
       font-weight: 700;
       color: #1f2937;
     }
 
-    .history-modal-close, .agent-modal-close, .training-modal-close {
+    .history-modal-close, .agent-modal-close {
       background: none;
       border: none;
       font-size: 24px;
@@ -1325,7 +1225,7 @@ const OllamaCache = (() => {
       line-height: 1;
     }
 
-    .history-modal-close:hover, .agent-modal-close:hover, .training-modal-close:hover {
+    .history-modal-close:hover, .agent-modal-close:hover {
       color: #1f2937;
     }
 
@@ -1363,12 +1263,45 @@ const OllamaCache = (() => {
       font-size: 14px;
     }
 
+    .history-item-info {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
     .history-item-count {
       font-size: 12px;
       color: #6b7280;
       background: #f3f4f6;
       padding: 4px 8px;
       border-radius: 4px;
+    }
+
+    .history-item-delete {
+      background: #fee2e2;
+      border: 1px solid #fecaca;
+      color: #991b1b;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 16px;
+      font-weight: bold;
+      transition: all 0.2s ease;
+      padding: 0;
+    }
+
+    .history-item-delete:hover {
+      background: #fecaca;
+      border-color: #f87171;
+      transform: scale(1.1);
+    }
+
+    .history-item-delete:active {
+      transform: scale(0.95);
     }
 
     .history-item-preview {
@@ -1505,138 +1438,198 @@ const OllamaCache = (() => {
     }
 
     /* --------------------------------------------------
-       TRAINING MODAL STYLES
+       AGENTIC GRID STYLES
     -------------------------------------------------- */
 
-    .training-config {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-      margin-bottom: 24px;
+    .agentic-grid-wrapper {
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
     }
 
-    .training-input-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
+    .grid-info {
+      font-size: 13px;
+      color: #6b7280;
+      margin-bottom: 12px;
+      font-weight: 600;
     }
 
-    .training-input-label {
+    .grid-table-wrapper {
+      overflow-x: auto;
+      margin-bottom: 16px;
+    }
+
+    .agentic-grid-table {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 14px;
+    }
+
+    .agentic-grid-table th,
+    .agentic-grid-table td {
+      border: 1px solid #d1d5db;
+      padding: 8px;
+      text-align: center;
+    }
+
+    .agentic-grid-table th {
+      background: #f3f4f6;
       font-weight: 600;
       color: #374151;
     }
 
-    .training-input {
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      padding: 10px 12px;
+    .agentic-grid-table .row-header {
+      background: #f9fafb;
+      font-weight: 600;
+      color: #6b7280;
+    }
+
+    .grid-cell {
+      width: 100%;
+      border: none;
+      padding: 4px 8px;
       font-size: 14px;
+      background: transparent;
+      text-align: center;
       outline: none;
     }
 
-    .training-input:focus {
-      border-color: #2563eb;
-      box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.1);
+    .grid-cell:focus {
+      background: #eff6ff;
+      border: 1px solid #2563eb;
+      border-radius: 4px;
     }
 
-    .training-data-source {
-      margin-bottom: 24px;
+    .action-cell {
+      white-space: nowrap;
     }
 
-    .training-radio-group {
-      display: flex;
-      gap: 12px;
-      margin-top: 8px;
-    }
-
-    .training-radio-option {
-      flex: 1;
-      padding: 12px;
-      border: 2px solid #d1d5db;
-      border-radius: 8px;
+    .grid-btn {
+      border: none;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 600;
       cursor: pointer;
+      transition: all 0.2s ease;
+      margin: 0 4px;
+    }
+
+    .grid-btn-primary {
+      background: #2563eb;
+      color: white;
+    }
+
+    .grid-btn-primary:hover {
+      background: #1d4ed8;
+    }
+
+    .grid-btn-success {
+      background: #10b981;
+      color: white;
+    }
+
+    .grid-btn-success:hover {
+      background: #059669;
+    }
+
+    .grid-btn-danger {
+      background: #ef4444;
+      color: white;
+    }
+
+    .grid-btn-danger:hover {
+      background: #dc2626;
+    }
+
+    .grid-btn-delete {
+      background: #fee2e2;
+      color: #991b1b;
+      border: 1px solid #fecaca;
+      padding: 4px 8px;
+      font-size: 16px;
+    }
+
+    .grid-btn-delete:hover {
+      background: #fecaca;
+      border-color: #f87171;
+    }
+
+    .grid-controls {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    /* --------------------------------------------------
+       PAGINATION CONTROLS
+    -------------------------------------------------- */
+
+    .pagination-container {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 12px;
+      padding: 16px 0;
+      margin-top: 8px;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .pagination-info {
+      font-size: 13px;
+      color: #6b7280;
+      font-weight: 500;
+    }
+
+    .pagination-controls {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+
+    .page-btn {
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      padding: 6px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      background: white;
+      color: #374151;
+      min-width: 36px;
       display: flex;
       align-items: center;
-      gap: 8px;
-      transition: all 0.2s ease;
+      justify-content: center;
     }
 
-    .training-radio-option:has(input:checked) {
-      border-color: #2563eb;
-      background: #eff6ff;
-    }
-
-    .training-radio-option input {
-      cursor: pointer;
-    }
-
-    .training-log {
-      background: #111827;
-      color: #10b981;
-      font-family: Consolas, Monaco, monospace;
-      font-size: 13px;
-      border-radius: 8px;
-      padding: 16px;
-      min-height: 200px;
-      max-height: 300px;
-      overflow-y: auto;
-      margin-bottom: 16px;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-
-    .training-progress-bar {
-      width: 100%;
-      height: 8px;
-      background: #e5e7eb;
-      border-radius: 4px;
-      overflow: hidden;
-      margin-bottom: 16px;
-    }
-
-    .training-progress-fill {
-      height: 100%;
-      background: linear-gradient(90deg, #2563eb, #3b82f6, #60a5fa);
-      width: 0%;
-      transition: width 0.3s ease;
-    }
-
-    .training-stats {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .training-stat-card {
-      background: #f9fafb;
-      border: 1px solid #e5e7eb;
-      border-radius: 8px;
-      padding: 12px;
-      text-align: center;
-    }
-
-    .training-stat-value {
-      font-size: 20px;
-      font-weight: 700;
-      color: #1f2937;
-    }
-
-    .training-stat-label {
-      font-size: 12px;
-      color: #6b7280;
-      margin-top: 4px;
-    }
-
-    .test-output-box {
+    .page-btn:hover:not(:disabled) {
       background: #f3f4f6;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      padding: 12px;
-      margin-top: 12px;
-      font-family: Consolas, Monaco, monospace;
-      font-size: 14px;
+      border-color: #9ca3af;
+    }
+
+    .page-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      background: #f9fafb;
+    }
+
+    .page-btn.active {
+      background: #2563eb;
+      color: white;
+      border-color: #2563eb;
+    }
+
+    .page-btn.active:hover {
+      background: #1d4ed8;
+      border-color: #1d4ed8;
+    }
+
+    .page-nav-btn {
+      padding: 6px 10px;
+      font-weight: 700;
     }
 
     @media (max-width: 700px) {
@@ -1685,118 +1678,89 @@ const OllamaCache = (() => {
     </div>
   </div>
 
-  <!-- Training Modal -->
-  <div class="training-modal" id="trainingModal">
-    <div class="training-modal-content">
-      <div class="training-modal-header">
-        <div class="training-modal-title">🧠 Train Model on Ollama Responses</div>
-        <button class="training-modal-close" id="trainingModalClose">×</button>
+  <!-- Settings Modal -->
+  <div class="agent-modal" id="settingsModal">
+    <div class="agent-modal-content">
+      <div class="agent-modal-header">
+        <div class="agent-modal-title">⚙️ Settings</div>
+        <button class="agent-modal-close" id="settingsModalClose">×</button>
       </div>
 
-      <!-- Training Configuration -->
       <div class="agent-section">
         <div class="agent-section-title">
-          <span>⚙️</span>
-          <span>Training Configuration</span>
-        </div>
-        <div class="training-config">
-          <div class="training-input-group">
-            <label class="training-input-label">Epochs</label>
-            <input type="number" id="trainingEpochs" class="training-input" value="500" min="1" max="10000">
-          </div>
-          <div class="training-input-group">
-            <label class="training-input-label">Learning Rate</label>
-            <input type="number" id="trainingLearningRate" class="training-input" value="0.1" step="0.01" min="0.001" max="1">
-          </div>
-          <div class="training-input-group">
-            <label class="training-input-label">Hidden Size</label>
-            <input type="number" id="trainingHiddenSize" class="training-input" value="32" min="8" max="256">
-          </div>
-          <div class="training-input-group">
-            <label class="training-input-label">Log Interval</label>
-            <input type="number" id="trainingLogInterval" class="training-input" value="100" min="1" max="1000">
-          </div>
-        </div>
-      </div>
-
-      <!-- Data Source -->
-      <div class="agent-section training-data-source">
-        <div class="agent-section-title">
-          <span>📚</span>
-          <span>Training Data Source</span>
+          <span>🌐</span>
+          <span>Ollama Configuration</span>
         </div>
         <div class="agent-section-description">
-          Choose what to train the model on
+          Configure the Ollama server URL and default model for AI responses.
         </div>
-        <div class="training-radio-group">
-          <label class="training-radio-option">
-            <input type="radio" name="trainingDataSource" value="responses" checked>
-            <div>
-              <div style="font-weight: 600;">All Ollama Responses</div>
-              <div style="font-size: 12px; color: #6b7280;">Train on all assistant messages</div>
-            </div>
+
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-weight: 600; margin-bottom: 6px; color: #374151;">
+            Ollama URL
           </label>
-          <label class="training-radio-option">
-            <input type="radio" name="trainingDataSource" value="liked">
-            <div>
-              <div style="font-weight: 600;">Liked Responses Only</div>
-              <div style="font-size: 12px; color: #6b7280;">Train on responses you liked</div>
-            </div>
+          <input
+            type="text"
+            id="ollamaUrlInput"
+            class="agent-name-input"
+            placeholder="e.g., http://localhost:11434/api/chat"
+          />
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            The API endpoint for your Ollama server
+          </div>
+        </div>
+
+        <div>
+          <label style="display: block; font-weight: 600; margin-bottom: 6px; color: #374151;">
+            Default Model
           </label>
+          <input
+            type="text"
+            id="modelInput"
+            class="agent-name-input"
+            placeholder="e.g., deepseek-r1:8b, llama3:8b"
+          />
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            The model to use for generating responses
+          </div>
         </div>
       </div>
 
-      <!-- Training Stats -->
-      <div class="training-stats" id="trainingStats" style="display: none;">
-        <div class="training-stat-card">
-          <div class="training-stat-value" id="statEpoch">0</div>
-          <div class="training-stat-label">Epoch</div>
-        </div>
-        <div class="training-stat-card">
-          <div class="training-stat-value" id="statLoss">0.0000</div>
-          <div class="training-stat-label">Loss</div>
-        </div>
-        <div class="training-stat-card">
-          <div class="training-stat-value" id="statVocab">0</div>
-          <div class="training-stat-label">Vocab Size</div>
-        </div>
-        <div class="training-stat-card">
-          <div class="training-stat-value" id="statDataSize">0</div>
-          <div class="training-stat-label">Data Size</div>
-        </div>
-      </div>
-
-      <!-- Progress Bar -->
-      <div class="training-progress-bar" id="trainingProgressBar" style="display: none;">
-        <div class="training-progress-fill" id="trainingProgressFill"></div>
-      </div>
-
-      <!-- Training Log -->
-      <div class="training-log" id="trainingLog" style="display: none;">Waiting to start training...</div>
-
-      <!-- Test Output -->
-      <div id="testOutputSection" style="display: none;">
+      <div class="agent-section">
         <div class="agent-section-title">
-          <span>🧪</span>
-          <span>Model Test</span>
+          <span>📄</span>
+          <span>Grid Pagination</span>
         </div>
-        <div class="training-input-group">
-          <label class="training-input-label">Seed Text</label>
-          <input type="text" id="testSeedText" class="training-input" placeholder="Enter seed text to test...">
+        <div class="agent-section-description">
+          Configure how many rows to display per page in the grid.
         </div>
-        <div class="training-input-group">
-          <label class="training-input-label">Generation Length</label>
-          <input type="number" id="testGenLength" class="training-input" value="20" min="1" max="200">
+
+        <div>
+          <label style="display: block; font-weight: 600; margin-bottom: 6px; color: #374151;">
+            Records Per Page
+          </label>
+          <input
+            type="number"
+            id="recordsPerPageInput"
+            class="agent-name-input"
+            placeholder="e.g., 10, 20, 50"
+            min="1"
+            max="1000"
+          />
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            Number of rows to display per page (default: 10)
+          </div>
         </div>
-        <button class="agent-btn agent-btn-primary" id="testModelBtn">Test Model</button>
-        <div class="test-output-box" id="testOutput" style="display: none;"></div>
       </div>
 
-      <!-- Actions -->
+      <div class="agent-info-box">
+        💡 <strong>Tip:</strong> These settings are stored locally and will persist across sessions. Make sure your Ollama server is running at the specified URL.
+      </div>
+
       <div class="agent-actions">
-        <button class="agent-btn agent-btn-secondary" id="trainingCancelBtn">Close</button>
-        <button class="agent-btn agent-btn-primary" id="startTrainingBtn">Start Training</button>
-        <button class="agent-btn agent-btn-secondary" id="stopTrainingBtn" style="display: none;">Stop Training</button>
+        <button class="agent-btn agent-btn-secondary" id="settingsCancelBtn">Cancel</button>
+        <button class="agent-btn agent-btn-secondary" id="settingsResetBtn">Reset to Default</button>
+        <button class="agent-btn agent-btn-primary" id="settingsSaveBtn">Save Settings</button>
       </div>
     </div>
   </div>
@@ -1913,11 +1877,7 @@ const OllamaCache = (() => {
         <span class="menu-icon">🤖</span>
         <span>Agent Configuration</span>
       </div>
-      <div class="menu-item" id="trainModelBtn">
-        <span class="menu-icon">🧠</span>
-        <span>Train Model</span>
-      </div>
-      <div class="menu-item">
+      <div class="menu-item" id="settingsBtn">
         <span class="menu-icon">⚙️</span>
         <span>Settings</span>
       </div>
@@ -1937,16 +1897,20 @@ const OllamaCache = (() => {
     </button>
 
     <div>
-      <h1>AI Formula Builder</h1>
+      <h1>AI Agentic Grid</h1>
       <div class="model-info">
-        <span id="modeIndicator">Standard Mode</span> |
+        <span id="modeIndicator" style="color: #10b981;">🔧 Tool Mode</span> |
         <span id="agentNameDisplay" style="color: #dbeafe;">Agent: Loading...</span>
       </div>
     </div>
 
     <div style="display: flex; align-items: center; gap: 12px;">
       <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
-        <input type="checkbox" id="toolModeToggle" style="cursor: pointer;">
+        <input type="checkbox" id="paraphraseToggle" style="cursor: pointer;" checked>
+        <span>🔄 Paraphrase</span>
+      </label>
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+        <input type="checkbox" id="toolModeToggle" style="cursor: pointer;" checked>
         <span>🔧 Tools</span>
       </label>
       <div class="status" id="status">
@@ -1956,12 +1920,35 @@ const OllamaCache = (() => {
 
   </div>
 
+  <!-- Main Content: Split between Grid and Chat -->
+  <div class="main-content">
 
-  <div
-    class="chat-container"
-    id="chatContainer">
+    <!-- Frozen Grid Section (Always Visible) -->
+    <div class="grid-section" id="gridSection">
+      <button class="grid-toggle-btn" id="gridToggleBtn">
+        <span id="gridToggleIcon">▼</span>
+        <span id="gridToggleText">Hide Grid</span>
+      </button>
+      <div class="grid-section-header">
+        <div class="grid-section-title">
+          <span>📊</span>
+          <span>Data Grid</span>
+        </div>
+      </div>
+      <div id="agenticGridContainer"></div>
+    </div>
+
+    <!-- Resize Handle -->
+    <div class="resize-handle" id="resizeHandle"></div>
+
+    <!-- Scrollable Chat Section -->
+    <div class="chat-section">
+      <div class="chat-container" id="chatContainer">
+        <!-- Chat messages will appear here -->
+      </div>
+    </div>
+
   </div>
-
 
   <div class="input-container">
 
@@ -1979,6 +1966,11 @@ const OllamaCache = (() => {
 
   </div>
 
+  <!-- Agentic Grid -->
+  <script src="agentic-grid.js"></script>
+
+  <!-- Harness Implementation -->
+  <script src="harness-impl.js"></script>
 
 <script>
 
@@ -1986,81 +1978,65 @@ const OllamaCache = (() => {
    CONFIGURATION
 ============================================================ */
 
-const OLLAMA_URL = "http://localhost:11434/api/chat";
+// Default configuration
+const DEFAULT_OLLAMA_URL = "http://localhost:11434/api/chat";
+const DEFAULT_MODEL = "deepseek-r1:8b";
+const DEFAULT_RECORDS_PER_PAGE = 10;
 
-const MODEL = "deepseek-r1:8b";
+// Settings storage key
+const SETTINGS_STORAGE_KEY = 'ollama_app_settings';
+
+// Load settings from localStorage or use defaults
+function loadSettings() {
+  const savedSettings = localStorage.getItem(SETTINGS_STORAGE_KEY);
+  if (savedSettings) {
+    try {
+      return JSON.parse(savedSettings);
+    } catch (e) {
+      console.error('Failed to parse settings:', e);
+    }
+  }
+  return {
+    ollamaUrl: DEFAULT_OLLAMA_URL,
+    model: DEFAULT_MODEL,
+    recordsPerPage: DEFAULT_RECORDS_PER_PAGE
+  };
+}
+
+// Save settings to localStorage
+function saveSettings(settings) {
+  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+}
+
+// Initialize settings
+let currentSettings = loadSettings();
+let OLLAMA_URL = currentSettings.ollamaUrl;
+let MODEL = currentSettings.model;
+let RECORDS_PER_PAGE = currentSettings.recordsPerPage || DEFAULT_RECORDS_PER_PAGE;
+
+console.log('✅ Settings loaded:', { OLLAMA_URL, MODEL, RECORDS_PER_PAGE });
 
 
 /* ============================================================
    TOOL CALLING SYSTEM
 ============================================================
 
-   Multi-tool calling support integrated into the formula builder.
+   Multi-tool calling support for conversation and cache management.
 
    Enable/Disable: Toggle "🔧 Tools" checkbox in the header
 
    Available Tools:
-   1. extract_formulas - Extract formulas from AI explanations
-   2. evaluate_formula - Validate and prepare math expressions
-   3. manage_history   - Save/load/clear conversation history
-   4. manage_cache     - Control Ollama response cache
+   1. manage_history   - Save/load/clear conversation history
+   2. manage_cache     - Control Ollama response cache
 
    When enabled, the LLM can automatically call these tools
-   to enhance responses with formula extraction, evaluation,
-   history management, and cache control.
+   to enhance responses with history management and cache control.
 
    Implementation: Pure JavaScript, no dependencies
 ============================================================ */
 
 // Tool implementations
 const tools = {
-  extract_formulas: async ({ explanation }) => {
-    if (!explanation || !explanation.trim()) {
-      return JSON.stringify({ error: "Empty explanation", success: false });
-    }
-    return JSON.stringify({
-      explanation: explanation,
-      requires_extraction: true,
-      success: true,
-      message: "Explanation ready for formula extraction"
-    });
-  },
-
-  evaluate_formula: async ({ expression, variables }) => {
-    if (!expression) {
-      return JSON.stringify({ error: "No expression provided", success: false });
-    }
-    if (!variables || typeof variables !== 'object') {
-      return JSON.stringify({ error: "Variables must be an object", success: false });
-    }
-
-    try {
-      const varPattern = /\b[a-zA-Z_][a-zA-Z0-9_]*\b/g;
-      const varsInExpression = expression.match(varPattern) || [];
-      const mathFunctions = ['sqrt', 'abs', 'min', 'max', 'round', 'floor', 'ceil', 'pow', 'log', 'ln', 'exp', 'sin', 'cos', 'tan'];
-      const requiredVars = varsInExpression.filter(v => !mathFunctions.includes(v.toLowerCase()));
-      const missingVars = requiredVars.filter(v => !(v in variables));
-
-      if (missingVars.length > 0) {
-        return JSON.stringify({
-          success: false,
-          error: `Missing variables: ${missingVars.join(', ')}`,
-          expression: expression
-        });
-      }
-
-      return JSON.stringify({
-        success: true,
-        expression: expression,
-        variables: variables,
-        message: "Ready for evaluation",
-        required_variables: requiredVars
-      });
-    } catch (error) {
-      return JSON.stringify({ success: false, error: error.message });
-    }
-  },
-
   manage_history: async ({ action, data }) => {
     try {
       switch (action) {
@@ -2113,40 +2089,193 @@ const tools = {
     } catch (error) {
       return JSON.stringify({ success: false, error: error.message });
     }
+  },
+
+  // Grid operations
+  add_grid_row: async ({ position }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const rowIndex = position ? parseInt(position) : undefined;
+        const result = window.AgenticGrid.addRow(rowIndex);
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  add_grid_column: async ({ position }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const colIndex = position ? parseInt(position) : undefined;
+        const result = window.AgenticGrid.addColumn(colIndex);
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  delete_grid_row: async ({ rowIndex }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.deleteRow(parseInt(rowIndex));
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  delete_grid_column: async ({ columnIndex }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.deleteColumn(parseInt(columnIndex));
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  update_grid_cell: async ({ rowIndex, columnIndex, value }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.updateCell(
+          parseInt(rowIndex),
+          parseInt(columnIndex),
+          value
+        );
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  get_grid_data: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const state = window.AgenticGrid.getFullState();
+        return `Grid State:
+- Rows: ${state.rows}
+- Columns: ${state.columns}
+- Headers: ${JSON.stringify(state.headers)}
+- Data: ${JSON.stringify(state.data, null, 2)}`;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  update_grid_header: async ({ columnIndex, value }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.updateHeader(
+          parseInt(columnIndex),
+          value
+        );
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  sort_grid_column: async ({ columnIndex, order }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const sortOrder = order || 'asc';
+        const result = window.AgenticGrid.sortColumn(
+          parseInt(columnIndex),
+          sortOrder
+        );
+        // Force a refresh after sort
+        setTimeout(() => {
+          if (window.AgenticGrid) {
+            console.log('⏱️ Post-sort refresh triggered');
+            window.AgenticGrid.forceRefresh();
+          }
+        }, 100);
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  refresh_grid: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.forceRefresh();
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  clear_grid: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.clear();
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  // Pagination tools
+  grid_goto_page: async ({ pageNumber }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.goToPage(parseInt(pageNumber));
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  grid_next_page: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.nextPage();
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  grid_previous_page: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined' && window.AgenticGrid) {
+        const result = window.AgenticGrid.previousPage();
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
   }
 };
 
 // Tool schemas for Ollama
 const toolSchemas = [
-  {
-    type: 'function',
-    function: {
-      name: 'extract_formulas',
-      description: 'Extract mathematical formulas, variables, equations from AI explanations. Use after receiving a math explanation.',
-      parameters: {
-        type: 'object',
-        properties: {
-          explanation: { type: 'string', description: 'The AI-generated explanation text' }
-        },
-        required: ['explanation']
-      }
-    }
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'evaluate_formula',
-      description: 'Evaluate a mathematical expression with variable values. Supports arithmetic and functions (sqrt, abs, etc.).',
-      parameters: {
-        type: 'object',
-        properties: {
-          expression: { type: 'string', description: 'Math expression like "sqrt(a^2 + b^2)"' },
-          variables: { type: 'object', description: 'Variable values like {"a": 3, "b": 4}' }
-        },
-        required: ['expression', 'variables']
-      }
-    }
-  },
   {
     type: 'function',
     function: {
@@ -2175,8 +2304,302 @@ const toolSchemas = [
         required: ['action']
       }
     }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_grid_row',
+      description: 'Add a new row to the grid. Can optionally specify position (0-based index). If no position provided, adds at the end.',
+      parameters: {
+        type: 'object',
+        properties: {
+          position: { type: 'string', description: 'Optional row index (0-based). If not provided, adds at end.' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'add_grid_column',
+      description: 'Add a new column to the grid. Can optionally specify position (0-based index). If no position provided, adds at the end.',
+      parameters: {
+        type: 'object',
+        properties: {
+          position: { type: 'string', description: 'Optional column index (0-based). If not provided, adds at end.' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_grid_row',
+      description: 'Delete a row from the grid by its index (0-based).',
+      parameters: {
+        type: 'object',
+        properties: {
+          rowIndex: { type: 'string', description: 'The row index to delete (0-based)' }
+        },
+        required: ['rowIndex']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'delete_grid_column',
+      description: 'Delete a column from the grid by its index (0-based).',
+      parameters: {
+        type: 'object',
+        properties: {
+          columnIndex: { type: 'string', description: 'The column index to delete (0-based)' }
+        },
+        required: ['columnIndex']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_grid_cell',
+      description: 'Update the value of a specific cell in the grid.',
+      parameters: {
+        type: 'object',
+        properties: {
+          rowIndex: { type: 'string', description: 'The row index (0-based)' },
+          columnIndex: { type: 'string', description: 'The column index (0-based)' },
+          value: { type: 'string', description: 'The new value for the cell' }
+        },
+        required: ['rowIndex', 'columnIndex', 'value']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_grid_data',
+      description: 'Get the current state of the grid including all data and dimensions.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'update_grid_header',
+      description: 'Update the header/label of a specific column in the grid.',
+      parameters: {
+        type: 'object',
+        properties: {
+          columnIndex: { type: 'string', description: 'The column index (0-based)' },
+          value: { type: 'string', description: 'The new header value' }
+        },
+        required: ['columnIndex', 'value']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'sort_grid_column',
+      description: 'Sort a column in the grid in ascending or descending order. Supports both numeric and alphabetic sorting.',
+      parameters: {
+        type: 'object',
+        properties: {
+          columnIndex: { type: 'string', description: 'The column index to sort (0-based)' },
+          order: { type: 'string', description: 'Sort order: "asc" for ascending or "desc" for descending. Default is "asc"', enum: ['asc', 'desc'] }
+        },
+        required: ['columnIndex']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'clear_grid',
+      description: 'Clear all data from the grid and reset it to the initial state (1 row × 3 columns).',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grid_goto_page',
+      description: 'Navigate to a specific page number in the grid. Page numbers are 1-based (page 1, page 2, etc.).',
+      parameters: {
+        type: 'object',
+        properties: {
+          pageNumber: { type: 'string', description: 'The page number to navigate to (1-based, e.g., "1", "2", "3")' }
+        },
+        required: ['pageNumber']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grid_next_page',
+      description: 'Navigate to the next page in the grid.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'grid_previous_page',
+      description: 'Navigate to the previous page in the grid.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
   }
 ];
+
+
+/* ============================================================
+   TOOL MODE SYSTEM PROMPT
+============================================================ */
+
+const toolModeSystemPrompt = `
+You are an AI assistant with access to grid management tools.
+
+CRITICAL INSTRUCTION: You must EXECUTE grid operations using tools, NOT just explain how to do them.
+When a user asks you to modify the grid, you should USE THE TOOLS to make the changes happen.
+
+You can manage a dynamic data grid with the following capabilities:
+
+GRID TOOLS AVAILABLE:
+- add_grid_row: Add a new row to the grid (optionally at a specific position)
+- add_grid_column: Add a new column to the grid (optionally at a specific position)
+- delete_grid_row: Delete a row by index (0-based)
+- delete_grid_column: Delete a column by index (0-based)
+- update_grid_cell: Update a cell value at [row, column]
+- update_grid_header: Update the header/label of a column
+- sort_grid_column: Sort a column in ascending or descending order
+- get_grid_data: Get current grid state and data
+- clear_grid: Reset grid to initial state (1 row × 3 columns)
+- grid_goto_page: Navigate to a specific page number (1-based)
+- grid_next_page: Navigate to the next page
+- grid_previous_page: Navigate to the previous page
+
+GRID UNDERSTANDING:
+- The grid uses 0-based indexing (first row is row 0, first column is col 0)
+- When user says "row 1", they typically mean the first data row (index 0)
+- When user says "column 1" or "col 1", they typically mean the first column (index 0)
+- Column headers are editable labels at the top of each column
+- Row headers are displayed as "0", "1", "2", etc. (not editable)
+- To change a COLUMN HEADER (the label at the top), use update_grid_header
+- To change a CELL VALUE (data in a row), use update_grid_cell
+
+USER INTENT EXAMPLES AND CORRECT RESPONSES:
+- "add a row" → EXECUTE: use add_grid_row with no position (adds at end), then say "Added a new row"
+- "add 2 rows" → EXECUTE: use add_grid_row twice, then say "Added 2 rows"
+- "add a column" → EXECUTE: use add_grid_column with no position, then say "Added a new column"
+- "delete row 0" → EXECUTE: use delete_grid_row with rowIndex: "0", then say "Deleted row 0"
+- "update cell at row 0 column 1 to Sales" → EXECUTE: use update_grid_cell(rowIndex:"0", columnIndex:"1", value:"Sales")
+- "set col 0 header to first name" → EXECUTE: use update_grid_header(columnIndex:"0", value:"first name")
+- "change header of column 0 to first name" → EXECUTE: use update_grid_header(columnIndex:"0", value:"first name")
+- "rename column 0 to Sales" → EXECUTE: use update_grid_header(columnIndex:"0", value:"Sales")
+- "sort the Sales column" → EXECUTE: First find which column index has "Sales" header (use get_grid_data), then use sort_grid_column(columnIndex:"X", order:"asc")
+- "sort column 0 ascending" → EXECUTE: use sort_grid_column(columnIndex:"0", order:"asc")
+- "sort column 1 descending" → EXECUTE: use sort_grid_column(columnIndex:"1", order:"desc")
+- "sort the first column" → EXECUTE: use sort_grid_column(columnIndex:"0", order:"asc")
+- "show me the grid" → EXECUTE: use get_grid_data, then summarize the results
+- "display 2nd page" or "go to page 2" → EXECUTE: use grid_goto_page(pageNumber:"2"), then say "Navigated to page 2"
+- "next page" → EXECUTE: use grid_next_page, then confirm navigation
+- "previous page" → EXECUTE: use grid_previous_page, then confirm navigation
+
+CRITICAL BEHAVIOR:
+1. When user asks you to modify the grid, ALWAYS use the tools to execute the action
+2. DO NOT just explain how to do it - ACTUALLY DO IT
+3. After executing tools, provide a brief confirmation of what you did
+4. If you're unsure about the user's intent, ask for clarification before executing
+
+Always use the appropriate tool when the user asks for grid operations.
+After using a tool, explain what you did in simple language.
+
+=== DYNAMIC TOOL CREATION ===
+
+YOU CAN CREATE NEW TOOLS WHEN YOU NEED THEM!
+
+When a user requests something you cannot do with existing tools:
+
+1. RECOGNIZE THE GAP
+   Example: "Copy row 3" → No copy_grid_row tool exists
+   Example: "Find column by header name" → No find_column_by_header tool exists
+   Example: "Swap two rows" → No swap_rows tool exists
+
+2. CHECK TEMPLATES FIRST
+   Use: list_tool_templates()
+   Available templates: copyRow, copyColumn, bulkUpdate
+
+3. CREATE THE TOOL
+   Option A - From Template (if available):
+     create_tool_from_template({ templateName: "copyRow" })
+
+   Option B - Custom Tool (if no template matches):
+     create_custom_tool({
+       name: "find_column_by_header",
+       description: "Find column index by header name",
+       parameters: '{"properties":{"headerName":{"type":"string","description":"Header name to search for"}},"required":["headerName"]}',
+       implementation: \`
+         if (!window.AgenticGrid) return 'Grid not initialized';
+         const state = window.AgenticGrid.getFullState();
+         const columnIndex = state.headers.findIndex(h => h.toLowerCase() === args.headerName.toLowerCase());
+         if (columnIndex === -1) {
+           return 'Error: Column with header "' + args.headerName + '" not found';
+         }
+         return 'Column "' + args.headerName + '" is at index ' + columnIndex;
+       \`
+     })
+
+4. USE THE NEW TOOL IMMEDIATELY
+   After creation, call it just like any other tool
+
+WORKFLOW EXAMPLE:
+User: "Sort the Sales column"
+You:
+  1. get_grid_data() → See headers but need to find "Sales" column index
+  2. list_tool_templates() → No template for finding column by header
+  3. create_custom_tool({ name: "find_column_by_header", ... })
+  4. find_column_by_header({ headerName: "Sales" }) → Returns index 2
+  5. sort_grid_column({ columnIndex: "2", order: "asc" })
+  6. Respond: "I created a find_column_by_header tool, found that Sales is column 2, and sorted it!"
+
+META-TOOLS AVAILABLE:
+- list_tool_templates: List available pre-built templates
+- create_tool_from_template: Create tool from a template
+- create_custom_tool: Create a completely custom tool
+- list_dynamic_tools: See all tools you've created this session
+
+NEVER SAY "I don't have a tool for X" - CREATE ONE INSTEAD!
+Tools you create are saved and persist across page refreshes.
+
+DYNAMIC TOOL CREATION:
+When you encounter a user request that requires a capability you don't have:
+1. Use 'list_tool_templates' to check available templates
+2. If a template exists, use 'create_tool_from_template' to create it
+3. If no template exists, use 'create_custom_tool' to build one
+4. Then immediately use the newly created tool to complete the user's request
+
+You have the ability to extend your own capabilities on-the-fly
+`;
 
 
 /* ============================================================
@@ -2192,514 +2615,13 @@ const toolSchemas = [
 
    Agent 2:
       Completed explanation
-          ↓
-      Formula IR
+
 
    DO NOT MIX THEIR SYSTEM PROMPTS.
 ============================================================ */
 
 
-/* ============================================================
-   AGENT 1 — EXPLANATION AGENT
-============================================================ */
 
-const explanationSystemPrompt = `
-You are an expert educational assistant.
-
-Your job is to answer the user's question clearly and accurately.
-
-If the user asks about a mathematical concept, explain the concept and
-include the relevant mathematical relationships and formulas.
-
-For example, if the user asks:
-
-"explain pythagores theorm"
-
-recognize that the user is referring to the Pythagorean theorem and explain it.
-
-For a Pythagorean theorem explanation, identify the variables and include
-the mathematical relationship:
-
-a^2 + b^2 = c^2
-
-and, when useful:
-
-c = sqrt(a^2 + b^2)
-
-Explain what a, b, and c represent.
-
-Do not return JSON.
-
-Return a normal natural-language explanation.
-
-The response will later be passed to a separate Formula Extraction Agent.
-`;
-
-
-/* ============================================================
-   AGENT 2 — FORMULA EXTRACTION AGENT
-============================================================ */
-
-const formulaExtractorSystemPrompt = `
-You are a Formula Extraction Agent.
-
-Your input is the COMPLETED RESPONSE GENERATED BY ANOTHER AI AGENT.
-
-IMPORTANT:
-
-The input is NOT the user's original question.
-
-The input is an AI-generated explanation.
-
-Your job is to scan the ENTIRE AI-generated explanation and extract
-mathematical, computational, scientific, financial, engineering,
-statistical, logical, and business calculation logic.
-
-Do NOT answer the user's question.
-
-Do NOT explain the subject.
-
-Do NOT calculate final numeric results.
-
-Do NOT solve equations.
-
-Do NOT invent unsupported mathematical relationships.
-
-However, if mathematical logic is explicitly expressed in natural language,
-you MUST convert it into a canonical mathematical expression.
-
-For example:
-
-"The square of the hypotenuse is equal to the sum of the squares of the
-other two sides."
-
-MUST become:
-
-c^2 = a^2 + b^2
-
-
-============================================================
-EXTRACTION RULES
-============================================================
-
-Extract:
-
-1. Variables
-2. Constants
-3. Direct formulas
-4. Equations
-5. Variables that need to be solved
-6. Constraints
-7. Business rules
-8. Dependencies
-9. Outputs
-10. Warnings
-
-
-============================================================
-NATURAL LANGUAGE FORMULAS
-============================================================
-
-Convert explicit mathematical language into formulas.
-
-Example:
-
-"The area of a rectangle is length multiplied by width."
-
-Extract:
-
-area = length * width
-
-
-Example:
-
-"Monthly interest rate is annual interest rate divided by 12."
-
-Extract:
-
-r_m = r / 12
-
-
-Example:
-
-"Total installments equal tenure in years multiplied by 12."
-
-Extract:
-
-T = n * 12
-
-
-Example:
-
-"Simple interest is principal times rate times time."
-
-Extract:
-
-simpleInterest = principal * rate * time
-
-
-============================================================
-PYTHAGOREAN THEOREM
-============================================================
-
-If the input contains:
-
-"The square of the hypotenuse is equal to the sum of the squares of the
-other two sides."
-
-Extract:
-
-a^2 + b^2 = c^2
-
-If the input explicitly provides:
-
-"c = sqrt(a^2 + b^2)"
-
-extract that as a formula for c.
-
-
-============================================================
-EXPLICIT EQUATIONS
-============================================================
-
-If the source contains:
-
-a^2 + b^2 = c^2
-
-create an equation:
-
-{
-  "left": "a^2+b^2",
-  "right": "c^2",
-  "solveFor": null,
-  "confidence": "high"
-}
-
-
-If the source says:
-
-"Find c."
-
-then:
-
-{
-  "left": "a^2+b^2",
-  "right": "c^2",
-  "solveFor": "c",
-  "confidence": "high"
-}
-
-Do NOT solve the equation numerically.
-
-
-============================================================
-DIRECT FORMULAS
-============================================================
-
-Example:
-
-EMI = P * r_m * (1+r_m)^T / ((1+r_m)^T - 1)
-
-Normalize it to:
-
-(P*r_m*(1+r_m)^T)/((1+r_m)^T-1)
-
-
-============================================================
-NORMALIZATION
-============================================================
-
-Use:
-
-+ - * / ^ ( )
-
-Convert:
-
-× → *
-÷ → /
-² → ^2
-³ → ^3
-√x → sqrt(x)
-
-Examples:
-
-a² → a^2
-
-(a+b)² → (a+b)^2
-
-√(a²+b²) → sqrt(a^2+b^2)
-
-
-============================================================
-VARIABLE TYPES
-============================================================
-
-Allowed:
-
-input
-derived
-solved
-constant
-series
-output
-
-
-Example:
-
-P = loan amount
-
-should be:
-
-{
-  "name": "P",
-  "label": "Loan Amount",
-  "type": "input",
-  "description": "Loan amount",
-  "unit": null,
-  "value": null,
-  "confidence": "high"
-}
-
-
-If:
-
-r_m = r / 12
-
-then r_m is:
-
-{
-  "name": "r_m",
-  "label": "Monthly Interest Rate",
-  "type": "derived",
-  "confidence": "high"
-}
-
-
-============================================================
-DEPENDENCIES
-============================================================
-
-Every formula must identify its dependencies.
-
-Example:
-
-r_m = r / 12
-
-dependencies:
-
-["r"]
-
-
-Example:
-
-EMI = (P*r_m*(1+r_m)^T)/((1+r_m)^T-1)
-
-dependencies:
-
-["P", "r_m", "T"]
-
-
-Also create dependency graph entries:
-
-{
-  "from": "r",
-  "to": "r_m",
-  "confidence": "high"
-}
-
-
-============================================================
-CONSTRAINTS
-============================================================
-
-Extract explicit constraints.
-
-Example:
-
-"The loan amount must be greater than zero."
-
-Extract:
-
-{
-  "expression": "P > 0",
-  "confidence": "high"
-}
-
-
-============================================================
-BUSINESS RULES
-============================================================
-
-Only extract rules explicitly stated by the source.
-
-Example:
-
-"Higher loan amount increases EMI."
-
-Extract:
-
-{
-  "source": "P",
-  "target": "EMI",
-  "relationship": "increases",
-  "confidence": "high"
-}
-
-
-Do not invent business rules.
-
-
-============================================================
-FUNCTIONS
-============================================================
-
-Recognize:
-
-sqrt
-abs
-min
-max
-round
-floor
-ceil
-pow
-log
-ln
-exp
-sin
-cos
-tan
-
-
-============================================================
-IMPORTANT
-============================================================
-
-Do NOT return empty results simply because the user's original question
-was conversational.
-
-You are NOT receiving the user's original question.
-
-You are receiving the completed AI-generated explanation.
-
-Look for mathematical content throughout that explanation.
-
-
-============================================================
-OUTPUT
-============================================================
-
-Return ONLY valid JSON.
-
-No Markdown.
-
-No code fences.
-
-No explanation outside JSON.
-
-Use exactly this top-level structure:
-
-{
-  "schemaVersion": "1.0",
-
-  "source": {
-    "type": "ai_generated_explanation"
-  },
-
-  "variables": [],
-
-  "constants": [],
-
-  "formulas": [],
-
-  "equations": [],
-
-  "constraints": [],
-
-  "rules": [],
-
-  "dependencies": [],
-
-  "outputs": [],
-
-  "warnings": []
-}
-
-
-============================================================
-FORMULA OBJECT
-============================================================
-
-Use:
-
-{
-  "name": "c",
-  "type": "output",
-  "expression": "sqrt(a^2+b^2)",
-  "dependencies": [
-    "a",
-    "b"
-  ],
-  "confidence": "high"
-}
-
-
-============================================================
-EQUATION OBJECT
-============================================================
-
-Use:
-
-{
-  "left": "a^2+b^2",
-  "right": "c^2",
-  "solveFor": null,
-  "confidence": "high"
-}
-
-
-============================================================
-VARIABLE OBJECT
-============================================================
-
-Use:
-
-{
-  "name": "a",
-  "label": "First perpendicular side",
-  "type": "input",
-  "description": "One of the two perpendicular sides",
-  "unit": null,
-  "value": null,
-  "confidence": "high"
-}
-
-
-============================================================
-FINAL VALIDATION
-============================================================
-
-Before returning JSON, check:
-
-1. Did you analyze the entire AI-generated explanation?
-2. Did you extract formulas expressed in natural language?
-3. Did you extract explicit equations?
-4. Did you identify variables?
-5. Did you identify derived variables?
-6. Did you identify constants?
-7. Did you identify dependencies?
-8. Did you identify outputs?
-9. Did you identify constraints?
-10. Did you identify explicit business rules?
-11. Did you avoid inventing unsupported formulas?
-12. Did you avoid calculating results?
-13. Did you avoid solving equations?
-14. Did you normalize mathematical notation?
-15. Is the response valid JSON?
-16. Is there NO text outside the JSON?
-
-Return ONLY the JSON.
-`;
 
 
 /* ============================================================
@@ -2741,7 +2663,7 @@ const progressText =
    LIKE BUTTON FUNCTIONALITY
 ============================================================ */
 
-const LIKE_STORAGE_KEY = "ai_formula_builder_likes";
+const LIKE_STORAGE_KEY = "ai_agentic_grid_likes";
 
 // Load likes from localStorage
 function loadLikes() {
@@ -2768,6 +2690,10 @@ let messageLikes = loadLikes();
 
 // Create like buttons for a message
 function createLikeButtons(messageElement, messageId) {
+  const toggleBtn = document.createElement("button");
+  toggleBtn.className = "like-toggle-btn";
+  toggleBtn.innerHTML = '<span class="like-toggle-icon">▼</span> Reactions';
+
   const container = document.createElement("div");
   container.className = "like-button-container";
 
@@ -2808,6 +2734,15 @@ function createLikeButtons(messageElement, messageId) {
     container.appendChild(button);
   });
 
+  toggleBtn.addEventListener("click", () => {
+    const isCollapsed = container.classList.toggle("collapsed");
+    toggleBtn.classList.toggle("collapsed");
+    toggleBtn.innerHTML = isCollapsed
+      ? '<span class="like-toggle-icon">▼</span> Reactions'
+      : '<span class="like-toggle-icon">▼</span> Reactions';
+  });
+
+  messageElement.appendChild(toggleBtn);
   messageElement.appendChild(container);
 }
 
@@ -2860,6 +2795,21 @@ function reattachLikeButtonListeners(messageElement) {
 
     newButton.addEventListener("click", () => handleLikeClick(newButton, messageId, reactionType));
   });
+
+  const toggleBtn = messageElement.querySelector('.like-toggle-btn');
+  if (toggleBtn) {
+    const container = messageElement.querySelector('.like-button-container');
+    const newToggleBtn = toggleBtn.cloneNode(true);
+    toggleBtn.parentNode.replaceChild(newToggleBtn, toggleBtn);
+
+    newToggleBtn.addEventListener("click", () => {
+      const isCollapsed = container.classList.toggle("collapsed");
+      newToggleBtn.classList.toggle("collapsed");
+      newToggleBtn.innerHTML = isCollapsed
+        ? '<span class="like-toggle-icon">▼</span> Reactions'
+        : '<span class="like-toggle-icon">▼</span> Reactions';
+    });
+  }
 }
 
 
@@ -3069,6 +3019,113 @@ document.getElementById('agentModal').addEventListener('click', (e) => {
   }
 });
 
+/* ============================================================
+   SETTINGS MODAL FUNCTIONS
+============================================================ */
+
+function openSettingsModal() {
+  const settingsModal = document.getElementById('settingsModal');
+  const ollamaUrlInput = document.getElementById('ollamaUrlInput');
+  const modelInput = document.getElementById('modelInput');
+  const recordsPerPageInput = document.getElementById('recordsPerPageInput');
+
+  // Load current settings
+  ollamaUrlInput.value = OLLAMA_URL;
+  modelInput.value = MODEL;
+  recordsPerPageInput.value = RECORDS_PER_PAGE;
+
+  settingsModal.classList.add('active');
+  menuOverlay.classList.add('active');
+}
+
+function closeSettingsModal() {
+  const settingsModal = document.getElementById('settingsModal');
+  settingsModal.classList.remove('active');
+  if (!sideMenu.classList.contains('open')) {
+    menuOverlay.classList.remove('active');
+  }
+}
+
+function saveSettingsFromModal() {
+  const ollamaUrlInput = document.getElementById('ollamaUrlInput');
+  const modelInput = document.getElementById('modelInput');
+  const recordsPerPageInput = document.getElementById('recordsPerPageInput');
+
+  const newOllamaUrl = ollamaUrlInput.value.trim();
+  const newModel = modelInput.value.trim();
+  const newRecordsPerPage = parseInt(recordsPerPageInput.value.trim()) || DEFAULT_RECORDS_PER_PAGE;
+
+  if (!newOllamaUrl) {
+    alert('Ollama URL cannot be empty');
+    return;
+  }
+
+  if (!newModel) {
+    alert('Model cannot be empty');
+    return;
+  }
+
+  if (newRecordsPerPage < 1 || newRecordsPerPage > 1000) {
+    alert('Records per page must be between 1 and 1000');
+    return;
+  }
+
+  // Update global variables
+  OLLAMA_URL = newOllamaUrl;
+  MODEL = newModel;
+  RECORDS_PER_PAGE = newRecordsPerPage;
+
+  // Save to localStorage
+  const settings = {
+    ollamaUrl: newOllamaUrl,
+    model: newModel,
+    recordsPerPage: newRecordsPerPage
+  };
+  saveSettings(settings);
+
+  console.log('✅ Settings saved:', settings);
+  statusElement.textContent = `Settings saved: ${MODEL} @ ${OLLAMA_URL}`;
+
+  // Update grid pagination if grid exists
+  if (window.AgenticGrid) {
+    window.AgenticGrid.setRecordsPerPage(newRecordsPerPage);
+  }
+
+  closeSettingsModal();
+}
+
+function resetSettingsToDefault() {
+  if (confirm("Reset settings to default values?")) {
+    const ollamaUrlInput = document.getElementById('ollamaUrlInput');
+    const modelInput = document.getElementById('modelInput');
+    const recordsPerPageInput = document.getElementById('recordsPerPageInput');
+
+    ollamaUrlInput.value = DEFAULT_OLLAMA_URL;
+    modelInput.value = DEFAULT_MODEL;
+    recordsPerPageInput.value = DEFAULT_RECORDS_PER_PAGE;
+  }
+}
+
+// Settings modal event listeners
+document.getElementById('settingsBtn').addEventListener('click', () => {
+  openSettingsModal();
+  closeMenu();
+});
+
+document.getElementById('settingsModalClose').addEventListener('click', closeSettingsModal);
+
+document.getElementById('settingsCancelBtn').addEventListener('click', closeSettingsModal);
+
+document.getElementById('settingsSaveBtn').addEventListener('click', saveSettingsFromModal);
+
+document.getElementById('settingsResetBtn').addEventListener('click', resetSettingsToDefault);
+
+document.getElementById('settingsModal').addEventListener('click', (e) => {
+  if (e.target.id === 'settingsModal') {
+    closeSettingsModal();
+  }
+});
+
 // Menu item handlers
 document.getElementById("newConversationBtn").addEventListener("click", () => {
   if (confirm("Start a new conversation? Current conversation will be archived.")) {
@@ -3100,14 +3157,14 @@ document.getElementById("clearHistoryBtn").addEventListener("click", () => {
    AGENT CONFIGURATION
 ============================================================ */
 
-const STORAGE_KEY_AGENT_GLOBAL = "ai_formula_builder_agent_global";
-const STORAGE_KEY_CONVERSATION_CONFIG = "ai_formula_builder_conversation_config";
+const STORAGE_KEY_AGENT_GLOBAL = "ai_agentic_grid_agent_global";
+const STORAGE_KEY_CONVERSATION_CONFIG = "ai_agentic_grid_conversation_config";
 
 // Default agent configuration
 const defaultAgentConfig = {
-  name: "Formula Builder Assistant",
+  name: "Agentic Grid Assistant",
   soul: "You are a helpful, clear, and enthusiastic assistant. You explain concepts with patience and use examples to make things easier to understand.",
-  systemInstructions: explanationSystemPrompt
+  systemInstructions: 'You are an AI assistant that can manage a dynamic data grid. You have access to tools for adding, deleting, updating, and sorting rows and columns. Always use the tools to perform actions on the grid when requested by the user.'
 };
 
 // Global agent configuration (applies to all conversations by default)
@@ -3229,7 +3286,7 @@ function saveAgentConfig(config, isConversationSpecific = true) {
 }
 
 // Get combined system prompt (system instructions + soul)
-function getCombinedSystemPrompt() {
+function getCombinedSystemPrompt(includeToolInstructions = false) {
   const activeConfig = getActiveAgentConfig();
 
   // Safety check - if activeConfig is not initialized, use defaults
@@ -3240,10 +3297,19 @@ function getCombinedSystemPrompt() {
   const soul = activeConfig.soul?.trim();
   const instructions = activeConfig.systemInstructions?.trim();
 
+  let basePrompt;
   if (soul && instructions) {
-    return `${soul}\n\n${instructions}`;
+    basePrompt = `${soul}\n\n${instructions}`;
+  } else {
+    basePrompt = instructions || soul || explanationSystemPrompt;
   }
-  return instructions || soul || explanationSystemPrompt;
+
+  // Add tool instructions if requested (for tool mode)
+  if (includeToolInstructions) {
+    return `${basePrompt}\n\n${toolModeSystemPrompt}`;
+  }
+
+  return basePrompt;
 }
 
 // Update agent display in UI
@@ -3264,8 +3330,8 @@ function updateAgentDisplay() {
    LOCAL STORAGE HISTORY
 ============================================================ */
 
-const STORAGE_KEY = "ai_formula_builder_current";
-const STORAGE_KEY_ARCHIVE = "ai_formula_builder_archive";
+const STORAGE_KEY = "ai_agentic_grid_current";
+const STORAGE_KEY_ARCHIVE = "ai_agentic_grid_archive";
 const MAX_HISTORY_ITEMS = 10; // Max archived conversations
 
 /*
@@ -3579,14 +3645,31 @@ function showHistoryListModal() {
             <div class="history-item-date">
               ${conversation.isCurrent ? '🟢 Current' : dateStr}
             </div>
-            <div class="history-item-count">${messageCount} messages</div>
+            <div class="history-item-info">
+              <div class="history-item-count">${messageCount} messages</div>
+              <button class="history-item-delete" title="Delete this conversation">×</button>
+            </div>
           </div>
           <div class="history-item-preview">${preview}</div>
         `;
 
-        item.addEventListener('click', () => {
+        // Add click handler to load conversation (except on delete button)
+        const contentArea = item.querySelector('.history-item-preview');
+        const dateArea = item.querySelector('.history-item-date');
+
+        const loadHandler = () => {
           loadSpecificConversation(conversation);
           closeHistoryModal();
+        };
+
+        contentArea.addEventListener('click', loadHandler);
+        dateArea.addEventListener('click', loadHandler);
+
+        // Add delete button handler
+        const deleteBtn = item.querySelector('.history-item-delete');
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation(); // Prevent loading the conversation
+          deleteConversation(conversation.timestamp, conversation.isCurrent);
         });
 
         historyList.appendChild(item);
@@ -3609,6 +3692,65 @@ function showHistoryListModal() {
 function closeHistoryModal() {
   const historyModal = document.getElementById('historyModal');
   historyModal.classList.remove('active');
+}
+
+/*
+   Delete a specific conversation from archive
+*/
+function deleteConversation(timestamp, isCurrent = false) {
+  try {
+    // Confirm deletion
+    if (!confirm("Are you sure you want to delete this conversation? This action cannot be undone.")) {
+      return;
+    }
+
+    showProgress("Deleting conversation...");
+    console.log("🗑️ Deleting conversation:", timestamp);
+
+    updateProgress(30, "Removing from archive...");
+
+    if (isCurrent) {
+      // Delete current conversation
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(STORAGE_KEY_CONVERSATION_CONFIG);
+
+      // Clear the UI and memory
+      clearConversationHistory();
+
+      console.log("✅ Current conversation deleted");
+    } else {
+      // Delete from archive
+      const savedArchive = localStorage.getItem(STORAGE_KEY_ARCHIVE);
+      if (savedArchive) {
+        let archive = JSON.parse(savedArchive);
+
+        // Filter out the conversation with matching timestamp
+        const originalLength = archive.length;
+        archive = archive.filter(conv => conv.timestamp !== timestamp);
+
+        if (archive.length < originalLength) {
+          // Save updated archive
+          localStorage.setItem(STORAGE_KEY_ARCHIVE, JSON.stringify(archive));
+          console.log("✅ Conversation deleted from archive");
+        } else {
+          console.warn("⚠️ Conversation not found in archive");
+        }
+      }
+    }
+
+    updateProgress(70, "Refreshing list...");
+
+    // Refresh the history list
+    setTimeout(() => {
+      showHistoryListModal();
+    }, 300);
+
+    hideProgress();
+  } catch (error) {
+    console.error("Failed to delete conversation:", error);
+    hideProgress();
+    alert("Failed to delete conversation: " + error.message);
+  }
 }
 
 /*
@@ -3734,12 +3876,7 @@ const conversationMemory = [
       completed AI explanation
 */
 
-const formulaExtractorMemory = [
-  {
-    role: "system",
-    content: formulaExtractorSystemPrompt
-  }
-];
+
 
 
 /* ============================================================
@@ -3976,6 +4113,13 @@ async function generateExplanation(
     answerContent
   );
 
+  // Move cursor from assistantDiv to answerContent (so it moves with text)
+  const cursor = assistantDiv.querySelector('[data-cursor="true"]');
+  if (cursor) {
+    cursor.remove();
+    answerContent.appendChild(cursor);
+  }
+
 
   while (true) {
 
@@ -4117,8 +4261,15 @@ async function generateExplanation(
         fullResponse +=
           processedContent;
 
-        answerContent.textContent =
-          fullResponse;
+        // Update text content and keep cursor at the end
+        const cursorElement = answerContent.querySelector('[data-cursor="true"]');
+        if (cursorElement) {
+          cursorElement.remove();
+        }
+        answerContent.textContent = fullResponse;
+        if (cursorElement) {
+          answerContent.appendChild(cursorElement);
+        }
 
         chatContainer.scrollTop =
           chatContainer.scrollHeight;
@@ -4126,6 +4277,12 @@ async function generateExplanation(
     }
   }
 
+
+  // Remove cursor when streaming is complete
+  const cursorElement = answerContent.querySelector('[data-cursor="true"]');
+  if (cursorElement) {
+    cursorElement.remove();
+  }
 
   /*
      Save ONLY the completed explanation.
@@ -4147,2460 +4304,10 @@ async function generateExplanation(
 
 
 /* ============================================================
-   FORMULA EXTRACTION
-============================================================ */
-
-async function extractFormula(
-  aiExplanation
-) {
-
-  if (
-    !aiExplanation ||
-    !aiExplanation.trim()
-  ) {
-
-    throw new Error(
-      "The explanation agent returned an empty response."
-    );
-  }
-
-
-  /*
-     THIS IS THE SECOND IMPORTANT FIX.
-
-     The extractor receives:
-
-       formula extractor system prompt
-       +
-       COMPLETED AI EXPLANATION
-
-     It does NOT receive:
-       "explain pythagores theorm"
-  */
-
-  const messages = [
-
-    ...formulaExtractorMemory,
-
-    {
-      role: "user",
-
-      content:
-        `
-IMPORTANT:
-
-The following text is the COMPLETED RESPONSE
-GENERATED BY ANOTHER AI AGENT.
-
-It is NOT the original user question.
-
-Extract all mathematical and computational logic
-from this completed response.
-
-Return ONLY Formula IR JSON.
-
---- BEGIN AI GENERATED RESPONSE ---
-
-${aiExplanation}
-
---- END AI GENERATED RESPONSE ---
-`
-    }
-
-  ];
-
-
-  console.log("========== FORMULA EXTRACTOR INPUT ==========");
-
-  console.log(messages);
-
-
-  const response =  await callOllama(messages, { model: MODEL, think: false, stream: false });
-
-
-  const data =
-    await response.json();
-
-
-  const content =
-    data.message?.content || "";
-
-
-  console.log("========== FORMULA EXTRACTOR OUTPUT ==========");
-
-  console.log(content);
-
-
-  if (!content.trim()) {
-
-    throw new Error(
-      "Formula Extraction Agent returned an empty response."
-    );
-  }
-
-
-  return parseFormulaIR(content);
-}
-
-function normalizeVariableName(name) {
-
-    if (typeof name !== "string") {
-        return "";
-    }
-
-    return name
-        .trim()
-
-        // Greek letters
-        .replace(/Δ/g, "delta")
-        .replace(/δ/g, "delta")
-        .replace(/ρ/g, "rho")
-        .replace(/σ/g, "sigma")
-        .replace(/τ/g, "tau")
-        .replace(/λ/g, "lambda")
-        .replace(/μ/g, "mu")
-        .replace(/π/g, "pi")
-        .replace(/θ/g, "theta")
-        .replace(/φ/g, "phi")
-        .replace(/ψ/g, "psi")
-        .replace(/Ψ/g, "psi")
-
-        // Spaces
-        .replace(/\s+/g, "_")
-
-        // Anything not supported by our identifier grammar
-        .replace(/[^A-Za-z0-9_]/g, "_");
-}
-function normalizeFormulaIR(ir) {
-
-    /*
-     * ----------------------------------------------------------
-     * Variables
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.variables)) {
-
-        ir.variables =
-            ir.variables.map(variable => {
-
-                const originalName =
-                    variable.name;
-
-                const normalizedName =
-                    normalizeVariableName(
-                        originalName
-                    );
-
-                return {
-                    ...variable,
-
-                    originalName,
-
-                    name:
-                        normalizedName
-                };
-            });
-    }
-
-
-    /*
-     * ----------------------------------------------------------
-     * Constants
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.constants)) {
-
-        ir.constants =
-            ir.constants.map(constant => {
-
-                return {
-                    ...constant,
-
-                    name:
-                        normalizeVariableName(
-                            constant.name
-                        )
-                };
-            });
-    }
-
-
-    /*
-     * ----------------------------------------------------------
-     * Formulas
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.formulas)) {
-
-        ir.formulas =
-            ir.formulas.map(formula => {
-
-                const normalizedExpression =
-                    normalizeExpression(
-                        formula.expression
-                    );
-
-                return {
-                    ...formula,
-
-                    name:
-                        normalizeVariableName(
-                            formula.name
-                        ),
-
-                    expression:
-                        normalizedExpression,
-
-                    dependencies:
-                        getDependencies(
-                            normalizedExpression
-                        )
-                };
-            });
-    }
-
-
-    /*
-     * ----------------------------------------------------------
-     * Equations
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.equations)) {
-
-        ir.equations =
-            ir.equations.map(equation => {
-
-                return {
-                    ...equation,
-
-                    left:
-                        normalizeExpression(
-                            equation.left
-                        ),
-
-                    right:
-                        normalizeExpression(
-                            equation.right
-                        ),
-
-                    solveFor:
-                        equation.solveFor
-                            ? normalizeVariableName(
-                                equation.solveFor
-                            )
-                            : null
-                };
-            });
-    }
-
-
-    /*
-     * ----------------------------------------------------------
-     * Dependencies
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.dependencies)) {
-
-        ir.dependencies =
-            ir.dependencies.map(dependency => {
-
-                return {
-                    ...dependency,
-
-                    from:
-                        normalizeVariableName(
-                            dependency.from
-                        ),
-
-                    to:
-                        normalizeVariableName(
-                            dependency.to
-                        )
-                };
-            });
-    }
-
-
-    /*
-     * ----------------------------------------------------------
-     * Outputs
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.outputs)) {
-
-        ir.outputs =
-            ir.outputs.map(
-                output =>
-                    normalizeVariableName(
-                        output
-                    )
-            );
-    }
-
-
-    /*
-     * ----------------------------------------------------------
-     * Constraints
-     * ----------------------------------------------------------
-     */
-
-    if (Array.isArray(ir.constraints)) {
-
-        ir.constraints =
-            ir.constraints.map(constraint => {
-
-                if (
-                    typeof constraint.expression ===
-                    "string"
-                ) {
-
-                    return {
-                        ...constraint,
-
-                        expression:
-                            normalizeExpression(
-                                constraint.expression
-                            )
-                    };
-                }
-
-                return constraint;
-            });
-    }
-
-
-    return ir;
-}
-/* ============================================================
-   PARSE FORMULA IR
-============================================================ */
-
-function parseFormulaIR(content) {
-
-    let text = content.trim();
-
-    text = text.replace(
-        /^```json\s*/i,
-        ""
-    );
-
-    text = text.replace(
-        /^```\s*/i,
-        ""
-    );
-
-    text = text.replace(
-        /\s*```$/i,
-        ""
-    );
-
-    text = text.trim();
-
-    const firstBrace =
-        text.indexOf("{");
-
-    const lastBrace =
-        text.lastIndexOf("}");
-
-    if (
-        firstBrace >= 0 &&
-        lastBrace > firstBrace
-    ) {
-        text =
-            text.substring(
-                firstBrace,
-                lastBrace + 1
-            );
-    }
-
-    let ir;
-
-    try {
-
-        ir = JSON.parse(text);
-
-    } catch (error) {
-
-        console.error(
-            "Invalid Formula IR:",
-            text
-        );
-
-        throw new Error(
-            "Formula Extraction Agent returned invalid JSON: " +
-            error.message
-        );
-    }
-
-
-    /*
-     * Guarantee the structure.
-     */
-
-    ir.schemaVersion =
-        ir.schemaVersion || "1.0";
-
-    ir.source =
-        ir.source || {
-            type: "ai_generated_explanation"
-        };
-
-    ir.variables =
-        Array.isArray(ir.variables)
-            ? ir.variables
-            : [];
-
-    ir.constants =
-        Array.isArray(ir.constants)
-            ? ir.constants
-            : [];
-
-    ir.formulas =
-        Array.isArray(ir.formulas)
-            ? ir.formulas
-            : [];
-
-    ir.equations =
-        Array.isArray(ir.equations)
-            ? ir.equations
-            : [];
-
-    ir.constraints =
-        Array.isArray(ir.constraints)
-            ? ir.constraints
-            : [];
-
-    ir.rules =
-        Array.isArray(ir.rules)
-            ? ir.rules
-            : [];
-
-    ir.dependencies =
-        Array.isArray(ir.dependencies)
-            ? ir.dependencies
-            : [];
-
-    ir.outputs =
-        Array.isArray(ir.outputs)
-            ? ir.outputs
-            : [];
-
-    ir.warnings =
-        Array.isArray(ir.warnings)
-            ? ir.warnings
-            : [];
-
-
-    /*
-     * VERY IMPORTANT:
-     *
-     * Normalize Unicode mathematical notation
-     * before sending expressions to the parser.
-     */
-
-    return normalizeFormulaIR(ir);
-}
-
-
-/* ============================================================
-   EXPRESSION NORMALIZATION
-============================================================ */
-
-function normalizeExpression(expression) {
-
-    if (typeof expression !== "string") {
-        return "";
-    }
-
-    let result = expression;
-
-    /*
-     * ----------------------------------------------------------
-     * Unicode mathematical symbols
-     * ----------------------------------------------------------
-     */
-
-    result = result
-        // Greek uppercase
-        .replace(/Δ/g, "delta")
-
-        // Greek lowercase
-        .replace(/δ/g, "delta")
-        .replace(/ρ/g, "rho")
-        .replace(/σ/g, "sigma")
-        .replace(/τ/g, "tau")
-        .replace(/λ/g, "lambda")
-        .replace(/μ/g, "mu")
-        .replace(/π/g, "pi")
-        .replace(/θ/g, "theta")
-        .replace(/φ/g, "phi")
-        .replace(/ψ/g, "psi")
-        .replace(/Ψ/g, "psi")
-
-        // Common mathematical symbols
-        .replace(/×/g, "*")
-        .replace(/÷/g, "/")
-        .replace(/[−–—]/g, "-")
-        .replace(/≤/g, "<=")
-        .replace(/≥/g, ">=")
-        .replace(/≠/g, "!=")
-        .replace(/≈/g, "==")
-
-        // Superscripts
-        .replace(/⁰/g, "^0")
-        .replace(/¹/g, "^1")
-        .replace(/²/g, "^2")
-        .replace(/³/g, "^3")
-        .replace(/⁴/g, "^4")
-        .replace(/⁵/g, "^5")
-        .replace(/⁶/g, "^6")
-        .replace(/⁷/g, "^7")
-        .replace(/⁸/g, "^8")
-        .replace(/⁹/g, "^9")
-
-        // Square root
-        .replace(/√\s*\(/g, "sqrt(")
-        .replace(
-            /√\s*([A-Za-z_][A-Za-z0-9_]*)/g,
-            "sqrt($1)"
-        )
-
-        // Brackets
-        .replace(/\[/g, "(")
-        .replace(/\]/g, ")")
-
-        // Unicode spaces
-        .replace(/\u00A0/g, " ")
-
-        .trim();
-
-    return result;
-}
-
-
-/* ============================================================
-   DEPENDENCIES
-============================================================ */
-
-function getDependencies(
-  expression
-) {
-
-  const functions =
-    new Set([
-      "sqrt",
-      "abs",
-      "min",
-      "max",
-      "round",
-      "floor",
-      "ceil",
-      "pow",
-      "log",
-      "ln",
-      "exp",
-      "sin",
-      "cos",
-      "tan"
-    ]);
-
-
-  const matches =
-    expression.match(
-      /\b[A-Za-z_][A-Za-z0-9_]*\b/g
-    ) || [];
-
-
-  return [
-    ...new Set(
-      matches.filter(
-        name =>
-          !functions.has(
-            name.toLowerCase()
-          )
-      )
-    )
-  ];
-}
-
-
-/* ============================================================
-   TOKENIZER
-============================================================ */
-
-class Tokenizer {
-
-  constructor(expression) {
-
-    this.expression =
-      expression;
-
-    this.position =
-      0;
-
-    this.tokens =
-      [];
-  }
-
-
-  tokenize() {
-
-    while (
-      this.position <
-      this.expression.length
-    ) {
-
-      const char =
-        this.expression[
-          this.position
-        ];
-
-
-      if (
-        /\s/.test(char)
-      ) {
-
-        this.position++;
-
-        continue;
-      }
-
-
-      /*
-         NUMBER
-      */
-
-      if (
-        /[0-9.]/.test(char)
-      ) {
-
-        let number =
-          "";
-
-
-        while (
-          this.position <
-          this.expression.length &&
-          /[0-9.]/.test(
-            this.expression[
-              this.position
-            ]
-          )
-        ) {
-
-          number +=
-            this.expression[
-              this.position
-            ];
-
-          this.position++;
-        }
-
-
-        if (
-          (number.match(/\./g) || [])
-            .length > 1
-        ) {
-
-          throw new Error(
-            `Invalid number: ${number}`
-          );
-        }
-
-
-        this.tokens.push({
-          type: "number",
-          value: Number(number)
-        });
-
-
-        continue;
-      }
-
-
-      /*
-         VARIABLE OR FUNCTION
-      */
-
-      if (
-        /[A-Za-z_]/.test(char)
-      ) {
-
-        let name =
-          "";
-
-
-        while (
-          this.position <
-          this.expression.length &&
-          /[A-Za-z0-9_]/.test(
-            this.expression[
-              this.position
-            ]
-          )
-        ) {
-
-          name +=
-            this.expression[
-              this.position
-            ];
-
-          this.position++;
-        }
-
-
-        this.tokens.push({
-          type: "identifier",
-          value: name
-        });
-
-
-        continue;
-      }
-
-
-      /*
-         OPERATORS
-      */
-
-      if (
-        "+-*/^(),".includes(char)
-      ) {
-
-        this.tokens.push({
-          type: char,
-          value: char
-        });
-
-
-        this.position++;
-
-        continue;
-      }
-
-
-      /*
-         THIS IS WHERE YOUR OLD CODE
-         WAS THROWING:
-
-         Unknown character: =
-      */
-
-      throw new Error(
-        `Unknown character: ${char}`
-      );
-    }
-
-
-    this.tokens.push({
-      type: "EOF",
-      value: null
-    });
-
-
-    return this.tokens;
-  }
-}
-
-
-/* ============================================================
-   PARSER
-============================================================ */
-
-class Parser {
-
-  constructor(expression) {
-
-    this.tokens =
-      new Tokenizer(
-        expression
-      ).tokenize();
-
-    this.position =
-      0;
-  }
-
-
-  current() {
-
-    return this.tokens[
-      this.position
-    ];
-  }
-
-
-  consume(type) {
-
-    const token =
-      this.current();
-
-
-    if (
-      !token ||
-      token.type !== type
-    ) {
-
-      throw new Error(
-        `Expected ${type}, found ${
-          token
-            ? token.value
-            : "end"
-        }`
-      );
-    }
-
-
-    this.position++;
-
-    return token;
-  }
-
-
-  parse() {
-
-    const node =
-      this.parseExpression();
-
-
-    if (
-      this.current().type !== "EOF"
-    ) {
-
-      throw new Error(
-        `Unexpected token: ${
-          this.current().value
-        }`
-      );
-    }
-
-
-    return node;
-  }
-
-
-  parseExpression() {
-
-    let node =
-      this.parseTerm();
-
-
-    while (
-      this.current().type === "+" ||
-      this.current().type === "-"
-    ) {
-
-      const operator =
-        this.consume(
-          this.current().type
-        ).value;
-
-
-      node = {
-
-        type: "operator",
-
-        operator,
-
-        left: node,
-
-        right:
-          this.parseTerm()
-      };
-    }
-
-
-    return node;
-  }
-
-
-  parseTerm() {
-
-    let node =
-      this.parsePower();
-
-
-    while (
-      this.current().type === "*" ||
-      this.current().type === "/"
-    ) {
-
-      const operator =
-        this.consume(
-          this.current().type
-        ).value;
-
-
-      node = {
-
-        type: "operator",
-
-        operator,
-
-        left: node,
-
-        right:
-          this.parsePower()
-      };
-    }
-
-
-    return node;
-  }
-
-
-  parsePower() {
-
-    const node =
-      this.parseUnary();
-
-
-    if (
-      this.current().type === "^"
-    ) {
-
-      this.consume("^");
-
-
-      return {
-
-        type: "operator",
-
-        operator: "^",
-
-        left: node,
-
-        right:
-          this.parsePower()
-      };
-    }
-
-
-    return node;
-  }
-
-
-  parseUnary() {
-
-    if (
-      this.current().type === "+"
-    ) {
-
-      this.consume("+");
-
-      return this.parseUnary();
-    }
-
-
-    if (
-      this.current().type === "-"
-    ) {
-
-      this.consume("-");
-
-
-      return {
-
-        type: "operator",
-
-        operator: "*",
-
-        left: {
-          type: "number",
-          value: -1
-        },
-
-        right:
-          this.parseUnary()
-      };
-    }
-
-
-    return this.parsePrimary();
-  }
-
-
-  parsePrimary() {
-
-    const token =
-      this.current();
-
-
-    /*
-       NUMBER
-    */
-
-    if (
-      token.type === "number"
-    ) {
-
-      this.position++;
-
-
-      return {
-
-        type: "number",
-
-        value:
-          token.value
-      };
-    }
-
-
-    /*
-       VARIABLE / FUNCTION
-    */
-
-    if (
-      token.type === "identifier"
-    ) {
-
-      this.position++;
-
-
-      /*
-         FUNCTION CALL
-
-         sqrt(...)
-      */
-
-      if (
-        this.current().type === "("
-      ) {
-
-        const functionName =
-          token.value;
-
-
-        this.consume("(");
-
-
-        const args =
-          [];
-
-
-        if (
-          this.current().type !== ")"
-        ) {
-
-          args.push(
-            this.parseExpression()
-          );
-
-
-          while (
-            this.current().type === ","
-          ) {
-
-            this.consume(",");
-
-
-            args.push(
-              this.parseExpression()
-            );
-          }
-        }
-
-
-        this.consume(")");
-
-
-        return {
-
-          type: "function",
-
-          name:
-            functionName,
-
-          arguments:
-            args
-        };
-      }
-
-
-      return {
-
-        type: "variable",
-
-        name:
-          token.value
-      };
-    }
-
-
-    /*
-       PARENTHESES
-    */
-
-    if (
-      token.type === "("
-    ) {
-
-      this.consume("(");
-
-
-      const node =
-        this.parseExpression();
-
-
-      this.consume(")");
-
-
-      return node;
-    }
-
-
-    throw new Error(
-      `Unexpected token: ${
-        token.value ?? "end"
-      }`
-    );
-  }
-}
-
-
-/* ============================================================
-   EVALUATOR
-============================================================ */
-
-class FormulaEvaluator {
-
-  constructor(
-    variables = {}
-  ) {
-
-    this.variables =
-      {
-        ...variables
-      };
-  }
-
-
-  evaluate(node) {
-
-    switch (
-      node.type
-    ) {
-
-      case "number":
-
-        return node.value;
-
-
-      case "variable":
-
-        if (
-          !(node.name in
-            this.variables)
-        ) {
-
-          throw new Error(
-            `Unknown variable: ${node.name}`
-          );
-        }
-
-
-        return Number(
-          this.variables[
-            node.name
-          ]
-        );
-
-
-      case "operator": {
-
-        const left =
-          this.evaluate(
-            node.left
-          );
-
-        const right =
-          this.evaluate(
-            node.right
-          );
-
-
-        switch (
-          node.operator
-        ) {
-
-          case "+":
-            return left + right;
-
-          case "-":
-            return left - right;
-
-          case "*":
-            return left * right;
-
-          case "/":
-
-            if (
-              right === 0
-            ) {
-
-              throw new Error(
-                "Division by zero"
-              );
-            }
-
-            return left / right;
-
-          case "^":
-            return Math.pow(
-              left,
-              right
-            );
-
-          default:
-
-            throw new Error(
-              `Unsupported operator: ${
-                node.operator
-              }`
-            );
-        }
-      }
-
-
-      case "function": {
-
-        const args =
-          node.arguments.map(
-            arg =>
-              this.evaluate(arg)
-          );
-
-
-        return this.evaluateFunction(
-          node.name,
-          args
-        );
-      }
-
-
-      default:
-
-        throw new Error(
-          `Unknown AST node: ${node.type}`
-        );
-    }
-  }
-
-
-  evaluateFunction(
-    name,
-    args
-  ) {
-
-    switch (
-      name.toLowerCase()
-    ) {
-
-      case "sqrt":
-        return Math.sqrt(
-          args[0]
-        );
-
-      case "abs":
-        return Math.abs(
-          args[0]
-        );
-
-      case "min":
-        return Math.min(
-          ...args
-        );
-
-      case "max":
-        return Math.max(
-          ...args
-        );
-
-      case "round":
-        return Math.round(
-          args[0]
-        );
-
-      case "floor":
-        return Math.floor(
-          args[0]
-        );
-
-      case "ceil":
-        return Math.ceil(
-          args[0]
-        );
-
-      case "pow":
-        return Math.pow(
-          args[0],
-          args[1]
-        );
-
-      case "log":
-        return Math.log10(
-          args[0]
-        );
-
-      case "ln":
-        return Math.log(
-          args[0]
-        );
-
-      case "exp":
-        return Math.exp(
-          args[0]
-        );
-
-      case "sin":
-        return Math.sin(
-          args[0]
-        );
-
-      case "cos":
-        return Math.cos(
-          args[0]
-        );
-
-      case "tan":
-        return Math.tan(
-          args[0]
-        );
-
-      default:
-
-        throw new Error(
-          `Unsupported function: ${name}`
-        );
-    }
-  }
-}
-
-
-/* ============================================================
-   BUILD FORMULA TREES
-============================================================ */
-
-function buildFormulaTrees(
-  formulaIR
-) {
-
-  const trees = {};
-
-
-  for (
-    const formula
-    of formulaIR.formulas
-  ) {
-
-    if (
-      !formula.expression
-    ) {
-
-      continue;
-    }
-
-
-    const expression =
-      normalizeExpression(
-        formula.expression
-      );
-
-
-    try {
-
-      trees[
-        formula.name
-      ] =
-        new Parser(
-          expression
-        ).parse();
-
-    } catch (error) {
-
-      console.error(
-        "Could not parse formula:",
-        formula,
-        error
-      );
-    }
-  }
-
-
-  return trees;
-}
-
-
-/* ============================================================
-   TREE UI
-============================================================ */
-
-function createTreeNode(
-  node
-) {
-
-  const element =
-    document.createElement(
-      "div"
-    );
-
-
-  element.className =
-    "tree-node";
-
-
-  if (
-    node.type === "operator"
-  ) {
-
-    const span =
-      document.createElement(
-        "span"
-      );
-
-
-    span.className =
-      "tree-operator";
-
-
-    span.textContent =
-      node.operator;
-
-
-    element.appendChild(
-      span
-    );
-
-
-    element.appendChild(
-      createTreeNode(
-        node.left
-      )
-    );
-
-
-    element.appendChild(
-      createTreeNode(
-        node.right
-      )
-    );
-
-
-    return element;
-  }
-
-
-  if (
-    node.type === "variable"
-  ) {
-
-    const span =
-      document.createElement(
-        "span"
-      );
-
-
-    span.className =
-      "tree-variable";
-
-
-    span.textContent =
-      `VARIABLE: ${node.name}`;
-
-
-    element.appendChild(
-      span
-    );
-
-
-    return element;
-  }
-
-
-  if (
-    node.type === "number"
-  ) {
-
-    const span =
-      document.createElement(
-        "span"
-      );
-
-
-    span.className =
-      "tree-number";
-
-
-    span.textContent =
-      `NUMBER: ${node.value}`;
-
-
-    element.appendChild(
-      span
-    );
-
-
-    return element;
-  }
-
-
-  if (
-    node.type === "function"
-  ) {
-
-    const span =
-      document.createElement(
-        "span"
-      );
-
-
-    span.className =
-      "tree-function";
-
-
-    span.textContent =
-      `FUNCTION: ${node.name}`;
-
-
-    element.appendChild(
-      span
-    );
-
-
-    for (
-      const argument
-      of node.arguments
-    ) {
-
-      element.appendChild(
-        createTreeNode(
-          argument
-        )
-      );
-    }
-
-
-    return element;
-  }
-
-
-  return element;
-}
-
-
-/* ============================================================
-   HTML ESCAPE
-============================================================ */
-
-function escapeHtml(
-  value
-) {
-
-  return String(value)
-
-    .replace(
-      /&/g,
-      "&amp;"
-    )
-
-    .replace(
-      /</g,
-      "&lt;"
-    )
-
-    .replace(
-      />/g,
-      "&gt;"
-    )
-
-    .replace(
-      /"/g,
-      "&quot;"
-    )
-
-    .replace(
-      /'/g,
-      "&#039;"
-    );
-}
-
-
-/* ============================================================
-   FORMULA UI
-============================================================ */
-
-function renderFormulaIR(
-  formulaIR,
-  container
-) {
-
-  const section =
-    document.createElement(
-      "div"
-    );
-
-
-  section.className =
-    "formula-section";
-
-
-  /* ----------------------------------------------------------
-     HEADER
-  ---------------------------------------------------------- */
-
-  const header =
-    document.createElement(
-      "div"
-    );
-
-
-  header.className =
-    "formula-header";
-
-
-  header.textContent =
-    "📐 Formula Builder";
-
-
-  section.appendChild(
-    header
-  );
-
-
-  /* ----------------------------------------------------------
-     FORMULAS
-  ---------------------------------------------------------- */
-
-  const formulaTitle =
-    document.createElement(
-      "div"
-    );
-
-
-  formulaTitle.className =
-    "formula-subheader";
-
-
-  formulaTitle.textContent =
-    "Extracted Formulas";
-
-
-  section.appendChild(
-    formulaTitle
-  );
-
-
-  const formulaList =
-    document.createElement(
-      "div"
-    );
-
-
-  formulaList.className =
-    "formula-list";
-
-
-  if (
-    formulaIR.formulas.length === 0
-  ) {
-
-    formulaList.textContent =
-      "No formulas extracted.";
-
-  } else {
-
-    for (
-      const formula
-      of formulaIR.formulas
-    ) {
-
-      const item =
-        document.createElement(
-          "div"
-        );
-
-
-      item.className =
-        "formula-item";
-
-
-      item.textContent =
-        `${formula.name} = ${
-          normalizeExpression(
-            formula.expression
-          )
-        }`;
-
-
-      formulaList.appendChild(
-        item
-      );
-    }
-  }
-
-
-  section.appendChild(
-    formulaList
-  );
-
-
-  /* ----------------------------------------------------------
-     EQUATIONS
-  ---------------------------------------------------------- */
-
-  if (
-    formulaIR.equations.length
-  ) {
-
-    const title =
-      document.createElement(
-        "div"
-      );
-
-
-    title.className =
-      "formula-subheader";
-
-
-    title.textContent =
-      "Equations";
-
-
-    section.appendChild(
-      title
-    );
-
-
-    const list =
-      document.createElement(
-        "div"
-      );
-
-
-    list.className =
-      "formula-list";
-
-
-    for (
-      const equation
-      of formulaIR.equations
-    ) {
-
-      const item =
-        document.createElement(
-          "div"
-        );
-
-
-      item.className =
-        "formula-item";
-
-
-      item.textContent =
-        `${equation.left} = ${equation.right}`;
-
-
-      if (
-        equation.solveFor
-      ) {
-
-        item.textContent +=
-          `   [solve for ${equation.solveFor}]`;
-      }
-
-
-      list.appendChild(
-        item
-      );
-    }
-
-
-    section.appendChild(
-      list
-    );
-  }
-
-
-  /* ----------------------------------------------------------
-     VARIABLES
-  ---------------------------------------------------------- */
-
-  if (
-    formulaIR.variables.length
-  ) {
-
-    renderVariables(
-      formulaIR,
-      section
-    );
-  }
-
-
-  /* ----------------------------------------------------------
-     FORMULA TREE
-  ---------------------------------------------------------- */
-
-  const trees =
-    buildFormulaTrees(
-      formulaIR
-    );
-
-
-  if (
-    Object.keys(trees).length
-  ) {
-
-    const title =
-      document.createElement(
-        "div"
-      );
-
-
-    title.className =
-      "formula-subheader";
-
-
-    title.textContent =
-      "Formula Tree";
-
-
-    section.appendChild(
-      title
-    );
-
-
-    const treeDisplay =
-      document.createElement(
-        "div"
-      );
-
-
-    treeDisplay.className =
-      "tree-display";
-
-
-    for (
-      const [
-        name,
-        tree
-      ]
-      of Object.entries(trees)
-    ) {
-
-      const formulaTree =
-        document.createElement(
-          "div"
-        );
-
-
-      formulaTree.className =
-        "tree-formula";
-
-
-      const root =
-        document.createElement(
-          "div"
-        );
-
-
-      root.className =
-        "tree-root";
-
-
-      root.textContent =
-        name;
-
-
-      formulaTree.appendChild(
-        root
-      );
-
-
-      formulaTree.appendChild(
-        createTreeNode(
-          tree
-        )
-      );
-
-
-      treeDisplay.appendChild(
-        formulaTree
-      );
-    }
-
-
-    section.appendChild(
-      treeDisplay
-    );
-  }
-
-
-  /* ----------------------------------------------------------
-     WARNINGS
-  ---------------------------------------------------------- */
-
-  if (
-    formulaIR.warnings.length
-  ) {
-
-    const warning =
-      document.createElement(
-        "div"
-      );
-
-
-    warning.className =
-      "error-display";
-
-
-    warning.textContent =
-      formulaIR.warnings
-        .map(
-          warning =>
-            warning.message ||
-            String(warning)
-        )
-        .join("\n");
-
-
-    section.appendChild(
-      warning
-    );
-  }
-
-
-  /* ----------------------------------------------------------
-     RAW FORMULA IR
-  ---------------------------------------------------------- */
-
-  const jsonTitle =
-    document.createElement(
-      "div"
-    );
-
-
-  jsonTitle.className =
-    "formula-subheader";
-
-
-  jsonTitle.textContent =
-    "Formula IR JSON";
-
-
-  section.appendChild(
-    jsonTitle
-  );
-
-
-  const jsonDisplay =
-    document.createElement(
-      "div"
-    );
-
-
-  jsonDisplay.className =
-    "json-display";
-
-
-  jsonDisplay.textContent =
-    JSON.stringify(
-      formulaIR,
-      null,
-      2
-    );
-
-
-  section.appendChild(
-    jsonDisplay
-  );
-
-
-  container.appendChild(
-    section
-  );
-}
-
-
-/* ============================================================
-   VARIABLES UI
-============================================================ */
-
-function renderVariables(
-  formulaIR,
-  section
-) {
-
-  const title =
-    document.createElement(
-      "div"
-    );
-
-
-  title.className =
-    "formula-subheader";
-
-
-  title.textContent =
-    "Variables";
-
-
-  section.appendChild(
-    title
-  );
-
-
-  const grid =
-    document.createElement(
-      "div"
-    );
-
-
-  grid.className =
-    "variables-grid";
-
-
-  const inputs = {};
-
-
-  for (
-    const variable
-    of formulaIR.variables
-  ) {
-
-    const name =
-      document.createElement(
-        "div"
-      );
-
-
-    name.className =
-      "variable-name";
-
-
-    name.textContent =
-      variable.name;
-
-
-    grid.appendChild(
-      name
-    );
-
-
-    const label =
-      document.createElement(
-        "div"
-      );
-
-
-    label.className =
-      "variable-label";
-
-
-    label.textContent =
-      variable.label ||
-      variable.description ||
-      variable.name;
-
-
-    grid.appendChild(
-      label
-    );
-
-
-    const input =
-      document.createElement(
-        "input"
-      );
-
-
-    input.className =
-      "variable-input";
-
-
-    input.type =
-      "number";
-
-
-    input.step =
-      "any";
-
-
-    input.placeholder =
-      variable.label ||
-      variable.name;
-
-
-    if (
-      variable.value !== null &&
-      variable.value !== undefined &&
-      !isNaN(
-        Number(variable.value)
-      )
-    ) {
-
-      input.value =
-        variable.value;
-    }
-
-
-    /*
-       Derived variables are calculated automatically.
-    */
-
-    if (
-      variable.type === "derived" ||
-      variable.type === "output" ||
-      variable.type === "solved"
-    ) {
-
-      input.disabled =
-        true;
-    }
-
-
-    grid.appendChild(
-      input
-    );
-
-
-    inputs[
-      variable.name
-    ] =
-      input;
-  }
-
-
-  section.appendChild(
-    grid
-  );
-
-
-  const button =
-    document.createElement(
-      "button"
-    );
-
-
-  button.className =
-    "calculate-btn";
-
-
-  button.textContent =
-    "Calculate";
-
-
-  section.appendChild(
-    button
-  );
-
-
-  const result =
-    document.createElement(
-      "div"
-    );
-
-
-  section.appendChild(
-    result
-  );
-
-
-  button.addEventListener(
-    "click",
-    () => {
-
-      calculateFormulas(
-        formulaIR,
-        inputs,
-        result
-      );
-
-    }
-  );
-}
-
-
-/* ============================================================
-   CALCULATE
-============================================================ */
-
-function calculateFormulas(
-  formulaIR,
-  inputs,
-  resultContainer
-) {
-
-  try {
-
-    const values = {};
-
-
-    /*
-       Collect user input values.
-    */
-
-    for (
-      const [
-        name,
-        input
-      ]
-      of Object.entries(inputs)
-    ) {
-
-      if (
-        input.value !== ""
-      ) {
-
-        const value =
-          Number(
-            input.value
-          );
-
-
-        if (
-          !Number.isFinite(value)
-        ) {
-
-          throw new Error(
-            `Invalid value for ${name}`
-          );
-        }
-
-
-        values[name] =
-          value;
-      }
-    }
-
-
-    const evaluator =
-      new FormulaEvaluator(
-        values
-      );
-
-
-    const results = {};
-
-
-    /*
-       We don't assume that the AI returned
-       formulas in dependency order.
-
-       Example:
-
-       EMI depends on r_m
-       r_m depends on r
-
-       Even if EMI appears first, we retry
-       until all possible formulas resolve.
-    */
-
-    const pending =
-      formulaIR.formulas
-        .filter(
-          formula =>
-            formula.expression &&
-            formula.type !== "solved"
-        )
-        .map(
-          formula => ({
-            ...formula
-          })
-        );
-
-
-    let progress =
-      true;
-
-
-    while (
-      pending.length &&
-      progress
-    ) {
-
-      progress =
-        false;
-
-
-      for (
-        let i =
-          pending.length - 1;
-
-        i >= 0;
-
-        i--
-      ) {
-
-        const formula =
-          pending[i];
-
-
-        try {
-
-          const expression =
-            normalizeExpression(
-              formula.expression
-            );
-
-
-          const tree =
-            new Parser(
-              expression
-            ).parse();
-
-
-          const value =
-            evaluator.evaluate(
-              tree
-            );
-
-
-          if (
-            !Number.isFinite(value)
-          ) {
-
-            throw new Error(
-              `Formula ${formula.name} produced an invalid result.`
-            );
-          }
-
-
-          results[
-            formula.name
-          ] =
-            value;
-
-
-          /*
-             The derived value becomes available
-             to formulas that depend on it.
-          */
-
-          evaluator.variables[
-            formula.name
-          ] =
-            value;
-
-
-          /*
-             Also update the UI input if it exists.
-          */
-
-          if (
-            inputs[
-              formula.name
-            ]
-          ) {
-
-            inputs[
-              formula.name
-            ].value =
-              value;
-          }
-
-
-          pending.splice(
-            i,
-            1
-          );
-
-
-          progress =
-            true;
-
-        } catch {
-          /*
-             Dependency isn't available yet.
-             Try again on the next pass.
-          */
-        }
-      }
-    }
-
-
-    let html = "";
-
-
-    for (
-      const [
-        name,
-        value
-      ]
-      of Object.entries(results)
-    ) {
-
-      html += `
-        <div class="result-display">
-          <div class="result-item">
-            <strong>${escapeHtml(name)}</strong>
-            =
-            ${Number(value).toFixed(6)}
-          </div>
-        </div>
-      `;
-    }
-
-
-    if (
-      pending.length
-    ) {
-
-      html += `
-        <div class="error-display">
-          Could not calculate:
-          ${pending
-            .map(
-              formula =>
-                formula.name
-            )
-            .join(", ")}
-
-          One or more required variables
-          are missing, or the formula requires
-          solving an equation.
-        </div>
-      `;
-    }
-
-
-    if (!html) {
-
-      html = `
-        <div class="error-display">
-          No formulas could be calculated.
-        </div>
-      `;
-    }
-
-
-    resultContainer.innerHTML =
-      html;
-
-  } catch (error) {
-
-    resultContainer.innerHTML =
-      `
-        <div class="error-display">
-          ${escapeHtml(
-            error.message
-          )}
-        </div>
-      `;
-  }
-}
-
-
-/* ============================================================
    TOOL CALLING HANDLER
 ============================================================ */
 
-async function handleToolCalls(messages, maxIterations = 3) {
+async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null) {
   let iteration = 0;
   const toolsUsed = [];
 
@@ -6628,7 +4335,8 @@ async function handleToolCalls(messages, maxIterations = 3) {
       // No more tool calls, return the final response with tools used info
       return {
         content: message.content,
-        toolsUsed: toolsUsed
+        toolsUsed: toolsUsed,
+        assistantDiv: assistantDiv
       };
     }
 
@@ -6688,6 +4396,68 @@ async function handleToolCalls(messages, maxIterations = 3) {
 
 
 /* ============================================================
+   PARAPHRASE USER INPUT
+============================================================ */
+
+/**
+ * Paraphrases user input using deepseek-r1:8b with explicit context awareness
+ * Creates a high-quality, context-aware reformulation of the user's message
+ */
+async function paraphraseUserInput(userInput) {
+  try {
+    statusElement.textContent = "Paraphrasing your input...";
+
+    // Create a context-aware paraphrasing prompt
+    const contextAwarePrompt = `You are a text paraphrasing assistant with explicit context awareness. Your task is to rephrase the user's input while maintaining its core meaning, intent, and any contextual references.
+
+CRITICAL INSTRUCTIONS:
+1. Preserve the original intent and meaning completely
+2. Maintain any technical terms, proper nouns, or specific references
+3. Keep the paraphrase concise and natural
+4. If the input references previous conversation context, acknowledge that in your paraphrase
+5. Improve clarity if the original is ambiguous
+6. Do NOT add new information not present in the original
+7. Output ONLY the paraphrased text, nothing else
+
+Original Input: "${userInput}"
+
+Paraphrased Version:`;
+
+    const paraphraseMessages = [
+      {
+        role: "system",
+        content: contextAwarePrompt
+      },
+      {
+        role: "user",
+        content: userInput
+      }
+    ];
+
+    // Call Ollama with deepseek-r1:8b for paraphrasing (no streaming, no tools)
+    const response = await callOllama(paraphraseMessages, {
+      model: "deepseek-r1:8b",
+      think: false,
+      stream: false,
+      tools: false
+    });
+
+    const data = await response.json();
+    const paraphrasedText = data.message?.content?.trim() || userInput;
+
+    console.log("🔄 Original Input:", userInput);
+    console.log("✨ Paraphrased Input:", paraphrasedText);
+
+    return paraphrasedText;
+  } catch (error) {
+    console.error("Paraphrasing failed, using original input:", error);
+    // Fallback to original input if paraphrasing fails
+    return userInput;
+  }
+}
+
+
+/* ============================================================
    SEND MESSAGE
 ============================================================ */
 isProcessing=false;
@@ -6708,14 +4478,22 @@ async function sendMessage() {
 
   messageInput.value="";
 
+  // STEP 1: Paraphrase user input using deepseek-r1:8b (if enabled)
+  const paraphraseEnabled = document.getElementById('paraphraseToggle').checked;
+  const paraphrasedQuestion = paraphraseEnabled
+    ? await paraphraseUserInput(userQuestion)
+    : userQuestion;
+
   // Check if tool mode is enabled
   const toolModeEnabled = document.getElementById('toolModeToggle').checked;
 
   statusElement.textContent= toolModeEnabled ? "Processing with tools..." : "Generating explanation...";
 
 
+  // Display the paraphrased version in the chat (with original if paraphrased)
   addUserMessage(
-    userQuestion
+    paraphrasedQuestion,
+    paraphraseEnabled ? userQuestion : null
   );
 
 
@@ -6727,20 +4505,30 @@ async function sendMessage() {
 
     // If tool mode is enabled, use tool calling
     if (toolModeEnabled) {
-      const toolMessages = [
-        {
-          role: "system",
-          content: explanationSystemPrompt
-        },
-        {
-          role: "user",
-          content: userQuestion
-        }
-      ];
+      // Temporarily update system prompt to include tool instructions for this interaction
+      const originalSystemPrompt = conversationMemory[0].content;
+      conversationMemory[0] = {
+        role: "system",
+        content: getCombinedSystemPrompt(true) // true = include tool instructions
+      };
+
+      // Add paraphrased question to conversation memory BEFORE calling tools
+      // This ensures the agent has full context of previous interactions
+      conversationMemory.push({
+        role: "user",
+        content: paraphrasedQuestion
+      });
 
       statusElement.textContent = "Using AI tools...";
 
-      const result = await handleToolCalls(toolMessages);
+      // Pass conversationMemory so the agent remembers previous context
+      const result = await handleToolCalls(conversationMemory, 3, assistantDiv);
+
+      // Restore original system prompt (without tool instructions clutter)
+      conversationMemory[0] = {
+        role: "system",
+        content: originalSystemPrompt
+      };
 
       // Display tools used (if any)
       if (result.toolsUsed && result.toolsUsed.length > 0) {
@@ -6750,17 +4538,54 @@ async function sendMessage() {
         assistantDiv.appendChild(toolsDiv);
       }
 
-      // Display the answer
+      // Create answer section
+      const answerLabel = document.createElement("div");
+      answerLabel.className = "answer-label";
+      answerLabel.textContent = "Answer:";
+      assistantDiv.appendChild(answerLabel);
+
       const answerContent = document.createElement("div");
       answerContent.className = "answer-content";
-      answerContent.textContent = result.content;
       assistantDiv.appendChild(answerContent);
 
-      // Update conversation memory
-      conversationMemory.push({
-        role: "user",
-        content: userQuestion
-      });
+      // Move cursor to answer content
+      const cursor = assistantDiv.querySelector('[data-cursor="true"]');
+      if (cursor) {
+        cursor.remove();
+        answerContent.appendChild(cursor);
+      }
+
+      // Stream the response character by character for visual effect
+      const content = result.content;
+      let displayedContent = "";
+
+      for (let i = 0; i < content.length; i++) {
+        displayedContent += content[i];
+
+        // Update text and keep cursor at the end
+        const cursorElement = answerContent.querySelector('[data-cursor="true"]');
+        if (cursorElement) {
+          cursorElement.remove();
+        }
+        answerContent.textContent = displayedContent;
+        if (cursorElement) {
+          answerContent.appendChild(cursorElement);
+        }
+
+        // Small delay for visual streaming effect
+        if (i % 5 === 0) { // Update every 5 characters to avoid too much delay
+          await new Promise(resolve => setTimeout(resolve, 10));
+          chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+      }
+
+      // Remove cursor when complete
+      const finalCursor = answerContent.querySelector('[data-cursor="true"]');
+      if (finalCursor) {
+        finalCursor.remove();
+      }
+
+      // Add assistant response to conversation memory
       conversationMemory.push({
         role: "assistant",
         content: result.content
@@ -6780,13 +4605,13 @@ async function sendMessage() {
       /*
          STEP 1
 
-         Generate normal explanation.
+         Generate normal explanation using the paraphrased question.
 
          THIS MUST NOT use the Formula Extractor prompt.
       */
 
       const explanation =await generateExplanation(
-          userQuestion,
+          paraphrasedQuestion,
           assistantDiv
         );
 
@@ -6807,49 +4632,10 @@ async function sendMessage() {
     }
 
 
-    /*
-       STEP 2
-
-       Extract formulas from the COMPLETED explanation.
-    */
-
-    statusElement.textContent =
-      "Extracting formulas...";
 
 
-    const formulaIR =
-      await extractFormula(
-        explanation
-      );
 
-
-    console.log(
-      "========== FORMULA IR =========="
-    );
-
-    console.log(
-      formulaIR
-    );
-
-
-    /*
-       STEP 3
-
-       Build Formula Tree.
-    */
-
-    statusElement.textContent =
-      "Building formula tree...";
-
-
-    renderFormulaIR(
-      formulaIR,
-      assistantDiv
-    );
-
-
-    statusElement.textContent =
-      "Ready";
+    statusElement.textContent="Ready";
 
     } // End of else block (standard mode)
 
@@ -6904,7 +4690,8 @@ async function sendMessage() {
 ============================================================ */
 
 function addUserMessage(
-  text
+  text,
+  originalText = null
 ) {
 
   const div =
@@ -6916,9 +4703,30 @@ function addUserMessage(
   div.className =
     "message user";
 
+  // If we have both original and paraphrased text, show both
+  if (originalText && originalText !== text) {
+    const originalDiv = document.createElement("div");
+    originalDiv.style.fontSize = "12px";
+    originalDiv.style.opacity = "0.7";
+    originalDiv.style.marginBottom = "6px";
+    originalDiv.style.fontStyle = "italic";
+    originalDiv.textContent = `Original: ${originalText}`;
 
-  div.textContent =
-    text;
+    const paraphrasedDiv = document.createElement("div");
+    paraphrasedDiv.textContent = text;
+
+    const indicator = document.createElement("div");
+    indicator.style.fontSize = "11px";
+    indicator.style.marginTop = "4px";
+    indicator.style.opacity = "0.6";
+    indicator.textContent = "🔄 Auto-paraphrased";
+
+    div.appendChild(originalDiv);
+    div.appendChild(paraphrasedDiv);
+    div.appendChild(indicator);
+  } else {
+    div.textContent = text;
+  }
 
 
   chatContainer.appendChild(
@@ -6945,6 +4753,12 @@ function createAssistantMessage() {
   // Generate unique message ID
   const messageId = generateMessageId();
   div.dataset.messageId = messageId;
+
+  // Add a blinking cursor while waiting for response
+  const cursor = document.createElement("span");
+  cursor.className = "typing-cursor";
+  cursor.dataset.cursor = "true";
+  div.appendChild(cursor);
 
 
   chatContainer.appendChild(
@@ -7298,6 +5112,77 @@ function updateSystemMessageDisplay() {
 
 
 /* ============================================================
+   GRID TOGGLE FUNCTIONALITY
+============================================================ */
+
+const gridSection = document.getElementById('gridSection');
+const gridToggleBtn = document.getElementById('gridToggleBtn');
+const gridToggleIcon = document.getElementById('gridToggleIcon');
+const gridToggleText = document.getElementById('gridToggleText');
+
+let isGridCollapsed = false;
+
+gridToggleBtn.addEventListener('click', () => {
+  isGridCollapsed = !isGridCollapsed;
+
+  if (isGridCollapsed) {
+    gridSection.classList.add('collapsed');
+    gridToggleIcon.textContent = '▶';
+    gridToggleText.textContent = 'Show Grid';
+    gridToggleBtn.style.position = 'fixed';
+    gridToggleBtn.style.top = '70px';
+  } else {
+    gridSection.classList.remove('collapsed');
+    gridToggleIcon.textContent = '▼';
+    gridToggleText.textContent = 'Hide Grid';
+    gridToggleBtn.style.position = 'absolute';
+    gridToggleBtn.style.top = '8px';
+  }
+});
+
+
+/* ============================================================
+   GRID RESIZE FUNCTIONALITY
+============================================================ */
+
+const resizeHandle = document.getElementById('resizeHandle');
+let isResizing = false;
+let startY = 0;
+let startHeight = 0;
+
+resizeHandle.addEventListener('mousedown', (e) => {
+  isResizing = true;
+  startY = e.clientY;
+  startHeight = gridSection.offsetHeight;
+  document.body.style.cursor = 'ns-resize';
+  document.body.style.userSelect = 'none';
+  e.preventDefault();
+});
+
+document.addEventListener('mousemove', (e) => {
+  if (!isResizing) return;
+
+  const deltaY = e.clientY - startY;
+  const newHeight = startHeight + deltaY;
+
+  // Constrain height between 100px and 70vh
+  const minHeight = 100;
+  const maxHeight = window.innerHeight * 0.7;
+  const constrainedHeight = Math.min(Math.max(newHeight, minHeight), maxHeight);
+
+  gridSection.style.maxHeight = `${constrainedHeight}px`;
+});
+
+document.addEventListener('mouseup', () => {
+  if (isResizing) {
+    isResizing = false;
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }
+});
+
+
+/* ============================================================
    EVENTS
 ============================================================ */
 
@@ -7388,293 +5273,26 @@ window.addEventListener("beforeunload", () => {
 
 messageInput.focus();
 
+</script>
 
-/* ============================================================
-   TRAINING MODAL FUNCTIONALITY
-============================================================ */
-
-let trainingModel = null;
-let trainingTokenizer = null;
-let isTraining = false;
-let trainingCancelled = false;
-
-const trainingModal = document.getElementById('trainingModal');
-const trainingModalClose = document.getElementById('trainingModalClose');
-const trainingCancelBtn = document.getElementById('trainingCancelBtn');
-const startTrainingBtn = document.getElementById('startTrainingBtn');
-const stopTrainingBtn = document.getElementById('stopTrainingBtn');
-const trainModelBtn = document.getElementById('trainModelBtn');
-const trainingLog = document.getElementById('trainingLog');
-const trainingStats = document.getElementById('trainingStats');
-const trainingProgressBar = document.getElementById('trainingProgressBar');
-const trainingProgressFill = document.getElementById('trainingProgressFill');
-const testOutputSection = document.getElementById('testOutputSection');
-const testModelBtn = document.getElementById('testModelBtn');
-const testOutput = document.getElementById('testOutput');
-
-// Open training modal
-trainModelBtn.addEventListener('click', () => {
-  trainingModal.classList.add('active');
-  menuOverlay.classList.remove('active');
-  sideMenu.classList.remove('open');
-  hamburgerBtn.classList.remove('active');
-});
-
-// Close training modal
-trainingModalClose.addEventListener('click', () => {
-  if (isTraining) {
-    if (confirm('Training is in progress. Are you sure you want to close?')) {
-      trainingCancelled = true;
-      trainingModal.classList.remove('active');
-    }
-  } else {
-    trainingModal.classList.remove('active');
-  }
-});
-
-trainingCancelBtn.addEventListener('click', () => {
-  if (isTraining) {
-    if (confirm('Training is in progress. Are you sure you want to close?')) {
-      trainingCancelled = true;
-      trainingModal.classList.remove('active');
-    }
-  } else {
-    trainingModal.classList.remove('active');
-  }
-});
-
-// Collect training data
-function collectTrainingData() {
-  const dataSource = document.querySelector('input[name="trainingDataSource"]:checked').value;
-  let trainingTexts = [];
-
-  // Collect from conversation memory (assistant messages only)
-  for (const msg of conversationMemory) {
-    if (msg.role === 'assistant') {
-      // Check if we should include this message
-      if (dataSource === 'responses') {
-        trainingTexts.push(msg.content);
-      } else if (dataSource === 'liked') {
-        // For liked responses, we need to check if it exists in DOM and has likes
-        // This is simplified - in production, you'd want to store likes metadata
-        trainingTexts.push(msg.content);
-      }
-    }
-  }
-
-  // If no data from memory, try to collect from DOM
-  if (trainingTexts.length === 0) {
-    const assistantMessages = document.querySelectorAll('.message.assistant');
-    assistantMessages.forEach(msgDiv => {
-      if (dataSource === 'liked') {
-        // Check if any like button is active
-        const activeLike = msgDiv.querySelector('.like-button.active');
-        if (activeLike) {
-          const text = msgDiv.textContent.replace(/^(Thinking:|Answer:)/gm, '').trim();
-          if (text) trainingTexts.push(text);
-        }
+<!-- Dynamic Tool Creation System -->
+<script src="dynamic-tool-creator.js"></script>
+<script src="tool-templates.js"></script>
+<script src="integrate-dynamic-tools.js"></script>
+<script>
+  // Initialize dynamic tool creation system after page load
+  document.addEventListener('DOMContentLoaded', () => {
+    setTimeout(() => {
+      if (typeof initializeDynamicToolSystem === 'function') {
+        console.log('🚀 Initializing Dynamic Tool Creation System...');
+        initializeDynamicToolSystem(tools, toolSchemas);
+        console.log('✅ Dynamic Tool Creation System ready!');
+        console.log('   Meta-tools available: list_tool_templates, create_tool_from_template, create_custom_tool, list_dynamic_tools');
       } else {
-        const text = msgDiv.textContent.replace(/^(Thinking:|Answer:)/gm, '').trim();
-        if (text) trainingTexts.push(text);
+        console.warn('⚠️ Dynamic Tool Creation System not loaded');
       }
-    });
-  }
-
-  // Combine all texts
-  const combinedText = trainingTexts.join('\n\n');
-  return combinedText;
-}
-
-// Add log message
-function addTrainingLog(message, type = 'info') {
-  const timestamp = new Date().toLocaleTimeString();
-  let prefix = '›';
-  if (type === 'success') prefix = '✓';
-  if (type === 'error') prefix = '✗';
-  if (type === 'info') prefix = 'ℹ';
-
-  const logLine = `[${timestamp}] ${prefix} ${message}\n`;
-  trainingLog.textContent += logLine;
-  trainingLog.scrollTop = trainingLog.scrollHeight;
-}
-
-// Update training stats
-function updateTrainingStats(epoch, loss, vocabSize, dataSize) {
-  document.getElementById('statEpoch').textContent = epoch;
-  document.getElementById('statLoss').textContent = loss.toFixed(4);
-  document.getElementById('statVocab').textContent = vocabSize;
-  document.getElementById('statDataSize').textContent = dataSize;
-}
-
-// Update progress
-function updateTrainingProgress(percent) {
-  trainingProgressFill.style.width = percent + '%';
-}
-
-// Start training
-startTrainingBtn.addEventListener('click', async () => {
-  try {
-    // Get configuration
-    const epochs = parseInt(document.getElementById('trainingEpochs').value);
-    const learningRate = parseFloat(document.getElementById('trainingLearningRate').value);
-    const hiddenSize = parseInt(document.getElementById('trainingHiddenSize').value);
-    const logInterval = parseInt(document.getElementById('trainingLogInterval').value);
-
-    // Validate
-    if (isNaN(epochs) || epochs < 1) {
-      alert('Please enter a valid number of epochs (minimum 1)');
-      return;
-    }
-    if (isNaN(learningRate) || learningRate <= 0) {
-      alert('Please enter a valid learning rate (greater than 0)');
-      return;
-    }
-    if (isNaN(hiddenSize) || hiddenSize < 8) {
-      alert('Please enter a valid hidden size (minimum 8)');
-      return;
-    }
-
-    // Collect data
-    addTrainingLog('Collecting training data...', 'info');
-    const trainingData = collectTrainingData();
-
-    if (!trainingData || trainingData.trim().length === 0) {
-      alert('No training data available. Please have some conversations with Ollama first.');
-      addTrainingLog('No training data found!', 'error');
-      return;
-    }
-
-    addTrainingLog(`Collected ${trainingData.length} characters of training data`, 'success');
-
-    // Initialize tokenizer
-    addTrainingLog('Building tokenizer...', 'info');
-    trainingTokenizer = new LLMTokenizer(trainingData);
-    addTrainingLog(`Vocabulary size: ${trainingTokenizer.vocabSize} unique characters`, 'success');
-
-    // Initialize model
-    addTrainingLog(`Initializing model with hidden size ${hiddenSize}...`, 'info');
-    trainingModel = new VanillaLLM(trainingTokenizer.vocabSize, hiddenSize);
-    addTrainingLog('Model initialized successfully', 'success');
-
-    // Prepare training data
-    const fullTokens = trainingTokenizer.encode(trainingData);
-    const inputs = fullTokens.slice(0, -1);
-    const targets = fullTokens.slice(1);
-
-    addTrainingLog(`Prepared ${inputs.length} training pairs`, 'success');
-
-    // Update UI
-    isTraining = true;
-    trainingCancelled = false;
-    startTrainingBtn.style.display = 'none';
-    stopTrainingBtn.style.display = 'inline-block';
-    trainingLog.style.display = 'block';
-    trainingStats.style.display = 'grid';
-    trainingProgressBar.style.display = 'block';
-    testOutputSection.style.display = 'none';
-
-    updateTrainingStats(0, 0, trainingTokenizer.vocabSize, trainingData.length);
-
-    // Test before training
-    addTrainingLog('Testing model before training...', 'info');
-    const seedChar = trainingData.charAt(0);
-    const beforeText = generateText(trainingModel, trainingTokenizer, seedChar, 20);
-    addTrainingLog(`Before: "${beforeText}"`, 'info');
-
-    addTrainingLog(`Starting training for ${epochs} epochs...`, 'info');
-    addTrainingLog('─'.repeat(50), 'info');
-
-    // Training loop
-    for (let epoch = 1; epoch <= epochs; epoch++) {
-      if (trainingCancelled) {
-        addTrainingLog('Training cancelled by user', 'error');
-        break;
-      }
-
-      const currentLoss = trainStep(trainingModel, inputs, targets, learningRate);
-
-      // Update stats and progress
-      const progress = (epoch / epochs) * 100;
-      updateTrainingProgress(progress);
-      updateTrainingStats(epoch, currentLoss, trainingTokenizer.vocabSize, trainingData.length);
-
-      // Log progress
-      if (epoch % logInterval === 0) {
-        addTrainingLog(`Epoch ${epoch}/${epochs} | Loss: ${currentLoss.toFixed(4)}`, 'success');
-      }
-
-      // Allow UI to update
-      if (epoch % 10 === 0) {
-        await new Promise(resolve => setTimeout(resolve, 0));
-      }
-    }
-
-    if (!trainingCancelled) {
-      addTrainingLog('─'.repeat(50), 'info');
-      addTrainingLog('Training complete!', 'success');
-
-      // Test after training
-      addTrainingLog('Testing model after training...', 'info');
-      const afterText = generateText(trainingModel, trainingTokenizer, seedChar, 20);
-      addTrainingLog(`After: "${afterText}"`, 'success');
-
-      // Show test section
-      testOutputSection.style.display = 'block';
-      document.getElementById('testSeedText').value = seedChar;
-    }
-
-  } catch (error) {
-    addTrainingLog(`Error: ${error.message}`, 'error');
-    console.error('Training error:', error);
-  } finally {
-    isTraining = false;
-    startTrainingBtn.style.display = 'inline-block';
-    stopTrainingBtn.style.display = 'none';
-  }
-});
-
-// Stop training
-stopTrainingBtn.addEventListener('click', () => {
-  if (confirm('Are you sure you want to stop training?')) {
-    trainingCancelled = true;
-    addTrainingLog('Stopping training...', 'info');
-  }
-});
-
-// Test model
-testModelBtn.addEventListener('click', () => {
-  if (!trainingModel || !trainingTokenizer) {
-    alert('Please train the model first!');
-    return;
-  }
-
-  const seedText = document.getElementById('testSeedText').value;
-  const genLength = parseInt(document.getElementById('testGenLength').value);
-
-  if (!seedText) {
-    alert('Please enter seed text');
-    return;
-  }
-
-  if (isNaN(genLength) || genLength < 1) {
-    alert('Please enter a valid generation length');
-    return;
-  }
-
-  try {
-    addTrainingLog(`Generating text from seed: "${seedText}"`, 'info');
-    const generated = generateText(trainingModel, trainingTokenizer, seedText, genLength);
-
-    testOutput.textContent = generated;
-    testOutput.style.display = 'block';
-
-    addTrainingLog(`Generated: "${generated}"`, 'success');
-  } catch (error) {
-    addTrainingLog(`Generation error: ${error.message}`, 'error');
-    alert(`Error: ${error.message}`);
-  }
-});
-
+    }, 200);
+  });
 </script>
 
 </body>
