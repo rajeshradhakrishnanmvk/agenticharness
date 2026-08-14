@@ -7,8 +7,7 @@
    CONFIGURATION
 ============================================================ */
 
-const OLLAMA_URL = "http://localhost:11434/api/chat";
-MODEL = "gemma4:e4b";
+// OLLAMA_URL and MODEL are now defined in index.html and loaded from settings
 
 const SYSTEM = `You are a helpful AI assistant with access to browser tools.
 
@@ -34,6 +33,10 @@ Grid Management:
 - Sorting supports both numeric and alphabetic data
 - Grid data can be exported to CSV format using export_grid_csv
 - Grid data can be imported from CSV format using import_grid_csv
+- The grid supports pagination - multiple pages of data can be navigated
+- Page numbers are 1-based (page 1 is the first page, page 2 is the second page, etc.)
+- You can navigate to specific pages, next page, or previous page
+- The number of records per page is configurable in settings
 
 USER INTENT EXAMPLES:
 - "add a row" → EXECUTE: use add_grid_row tool, then confirm "Added a new row"
@@ -43,6 +46,9 @@ USER INTENT EXAMPLES:
 - "set cell at row 1 column 0 to John" → EXECUTE: use update_grid_cell(rowIndex:"1", columnIndex:"0", value:"John")
 - "sort column 0 ascending" → EXECUTE: use sort_grid_column(columnIndex:"0", order:"asc")
 - "sort the Sales column" → EXECUTE: First get grid data to find Sales column index, then use sort_grid_column
+- "display 2nd page" or "go to page 2" → EXECUTE: use grid_goto_page(pageNumber:"2")
+- "next page" → EXECUTE: use grid_next_page
+- "previous page" → EXECUTE: use grid_previous_page
 
 CRITICAL BEHAVIOR:
 1. When user asks you to do something, ALWAYS use the appropriate tools to execute the action
@@ -299,6 +305,43 @@ const htools = {
     } catch (error) {
       return `Error: ${error.message}`;
     }
+  },
+
+  // Pagination tools
+  grid_goto_page: async ({ pageNumber }) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined') {
+        const result = window.AgenticGrid.goToPage(parseInt(pageNumber));
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  grid_next_page: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined') {
+        const result = window.AgenticGrid.nextPage();
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
+  },
+
+  grid_previous_page: async ({}) => {
+    try {
+      if (typeof window.AgenticGrid !== 'undefined') {
+        const result = window.AgenticGrid.previousPage();
+        return result;
+      }
+      return 'Grid not initialized';
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
   }
 };
 
@@ -430,6 +473,29 @@ const defs = [
     name: 'import_grid_csv',
     description: 'Import grid data from CSV content',
     parameters: mkp('csvContent')
+  },
+  {
+    name: 'grid_goto_page',
+    description: 'Navigate to a specific page number in the grid (1-based page numbers)',
+    parameters: mkp('pageNumber')
+  },
+  {
+    name: 'grid_next_page',
+    description: 'Navigate to the next page in the grid',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
+  },
+  {
+    name: 'grid_previous_page',
+    description: 'Navigate to the previous page in the grid',
+    parameters: {
+      type: 'object',
+      properties: {},
+      required: []
+    }
   }
 ].map(f => ({ type: 'function', function: f }));
 
