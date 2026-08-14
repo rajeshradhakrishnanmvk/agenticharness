@@ -14,7 +14,76 @@
       const stored = this.loadFromStorage();
       this.data = stored?.data || this.createInitialData();
       this.headers = stored?.headers || this.createInitialHeaders();
+      this.currentPage = 1;
+      this.recordsPerPage = this.loadRecordsPerPage();
       this.render();
+    }
+
+    loadRecordsPerPage() {
+      // Load from global settings if available
+      if (typeof RECORDS_PER_PAGE !== 'undefined') {
+        return RECORDS_PER_PAGE;
+      }
+      // Fallback to localStorage
+      try {
+        const settings = localStorage.getItem('ollama_app_settings');
+        if (settings) {
+          const parsed = JSON.parse(settings);
+          return parsed.recordsPerPage || 10;
+        }
+      } catch (e) {
+        console.error('Error loading records per page:', e);
+      }
+      return 10; // Default
+    }
+
+    setRecordsPerPage(count) {
+      this.recordsPerPage = count;
+      this.currentPage = 1; // Reset to first page
+      this.render();
+    }
+
+    getTotalPages() {
+      return Math.ceil(this.data.length / this.recordsPerPage);
+    }
+
+    goToPage(pageNumber) {
+      const totalPages = this.getTotalPages();
+      if (pageNumber < 1) {
+        this.currentPage = 1;
+      } else if (pageNumber > totalPages) {
+        this.currentPage = totalPages || 1;
+      } else {
+        this.currentPage = pageNumber;
+      }
+      this.render();
+      return `Navigated to page ${this.currentPage} of ${totalPages}`;
+    }
+
+    nextPage() {
+      const totalPages = this.getTotalPages();
+      if (this.currentPage < totalPages) {
+        this.currentPage++;
+        this.render();
+        return `Navigated to page ${this.currentPage} of ${totalPages}`;
+      }
+      return `Already on last page (${totalPages})`;
+    }
+
+    previousPage() {
+      if (this.currentPage > 1) {
+        this.currentPage--;
+        const totalPages = this.getTotalPages();
+        this.render();
+        return `Navigated to page ${this.currentPage} of ${totalPages}`;
+      }
+      return 'Already on first page';
+    }
+
+    getPaginatedData() {
+      const startIndex = (this.currentPage - 1) * this.recordsPerPage;
+      const endIndex = startIndex + this.recordsPerPage;
+      return this.data.slice(startIndex, endIndex);
     }
 
     createInitialData() {
@@ -445,11 +514,14 @@
 
       const rowCount = this.data.length;
       const columnCount = this.data[0] ? this.data[0].length : 0;
+      const totalPages = this.getTotalPages();
+      const paginatedData = this.getPaginatedData();
+      const startRow = (this.currentPage - 1) * this.recordsPerPage;
 
-      console.log(`📊 Rendering grid: ${rowCount} rows × ${columnCount} columns`);
+      console.log(`📊 Rendering grid: ${rowCount} total rows × ${columnCount} columns (Page ${this.currentPage}/${totalPages})`);
 
       let html = '<div class="agentic-grid-wrapper">';
-      html += `<div class="grid-info">Grid: ${rowCount} rows × ${columnCount} columns</div>`;
+      html += `<div class="grid-info">Grid: ${rowCount} rows × ${columnCount} columns | Page ${this.currentPage} of ${totalPages}</div>`;
       html += '<div class="grid-table-wrapper"><table class="agentic-grid-table">';
 
       // Header row with editable headers and sort buttons
@@ -476,26 +548,29 @@
       html += '<input type="file" id="csvFileInput" accept=".csv" style="display: none;">';
       // html += '<button class="grid-btn grid-btn-danger" id="clearGridBtn">🗑️ Clear Grid</button>';
       html += '</div>';
-      // Body rows
+      // Body rows - use paginated data
       html += '<tbody>';
-      for (let r = 0; r < rowCount; r++) {
-        html += `<tr><td class="row-header">${r}</td>`;
+      for (let i = 0; i < paginatedData.length; i++) {
+        const actualRowIndex = startRow + i; // Actual index in full data
+        const row = paginatedData[i];
+        html += `<tr><td class="row-header">${actualRowIndex}</td>`;
 
         for (let c = 0; c < columnCount; c++) {
-          const cellValue = this.data[r][c] || '';
-          html += `<td><input type="text" class="grid-cell" data-row="${r}" data-col="${c}" value="${this.escapeHtml(cellValue)}"></td>`;
+          const cellValue = row[c] || '';
+          html += `<td><input type="text" class="grid-cell" data-row="${actualRowIndex}" data-col="${c}" value="${this.escapeHtml(cellValue)}"></td>`;
         }
 
         // Action buttons
         html += '<td class="action-cell">';
-        html += `<button class="grid-btn grid-btn-delete" data-action="delete-row" data-row="${r}" title="Delete Row">🗑️</button>`;
+        html += `<button class="grid-btn grid-btn-delete" data-action="delete-row" data-row="${actualRowIndex}" title="Delete Row">🗑️</button>`;
         html += '</td></tr>';
       }
       html += '</tbody>';
 
       html += '</table></div>';
 
-
+      // Pagination controls
+      html += this.renderPaginationControls();
 
       html += '</div>';
 
@@ -504,6 +579,67 @@
       console.log('🔗 Attaching event listeners...');
       this.attachEventListeners();
       console.log('✅ Render complete!');
+    }
+
+    renderPaginationControls() {
+      const totalPages = this.getTotalPages();
+      if (totalPages <= 1) {
+        return ''; // No pagination needed
+      }
+
+      const startRow = (this.currentPage - 1) * this.recordsPerPage + 1;
+      const endRow = Math.min(this.currentPage * this.recordsPerPage, this.data.length);
+
+      let html = '<div class="pagination-container">';
+
+      // Info text
+      html += `<div class="pagination-info">Showing ${startRow}-${endRow} of ${this.data.length} rows</div>`;
+
+      // Pagination controls
+      html += '<div class="pagination-controls">';
+
+      // Previous button
+      html += `<button class="page-btn page-nav-btn" data-action="prev-page" ${this.currentPage === 1 ? 'disabled' : ''}>‹</button>`;
+
+      // Page numbers
+      const maxVisiblePages = 5;
+      let startPage = Math.max(1, this.currentPage - Math.floor(maxVisiblePages / 2));
+      let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+
+      // Adjust start if we're near the end
+      if (endPage - startPage < maxVisiblePages - 1) {
+        startPage = Math.max(1, endPage - maxVisiblePages + 1);
+      }
+
+      // First page button
+      if (startPage > 1) {
+        html += `<button class="page-btn" data-action="goto-page" data-page="1">1</button>`;
+        if (startPage > 2) {
+          html += `<span style="padding: 0 4px; color: #9ca3af;">...</span>`;
+        }
+      }
+
+      // Page number buttons
+      for (let p = startPage; p <= endPage; p++) {
+        const activeClass = p === this.currentPage ? 'active' : '';
+        html += `<button class="page-btn ${activeClass}" data-action="goto-page" data-page="${p}">${p}</button>`;
+      }
+
+      // Last page button
+      if (endPage < totalPages) {
+        if (endPage < totalPages - 1) {
+          html += `<span style="padding: 0 4px; color: #9ca3af;">...</span>`;
+        }
+        html += `<button class="page-btn" data-action="goto-page" data-page="${totalPages}">${totalPages}</button>`;
+      }
+
+      // Next button
+      html += `<button class="page-btn page-nav-btn" data-action="next-page" ${this.currentPage === totalPages ? 'disabled' : ''}>›</button>`;
+
+      html += '</div>';
+      html += '</div>';
+
+      return html;
     }
 
     escapeHtml(text) {
@@ -643,6 +779,23 @@
           csvFileInput.value = '';
         });
       }
+
+      // Pagination button listeners
+      const paginationBtns = this.container.querySelectorAll('[data-action^="goto-page"], [data-action="prev-page"], [data-action="next-page"]');
+      paginationBtns.forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const action = e.target.dataset.action;
+
+          if (action === 'prev-page') {
+            this.previousPage();
+          } else if (action === 'next-page') {
+            this.nextPage();
+          } else if (action === 'goto-page') {
+            const page = parseInt(e.target.dataset.page);
+            this.goToPage(page);
+          }
+        });
+      });
     }
   }
 
