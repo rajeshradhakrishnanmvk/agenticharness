@@ -1972,6 +1972,37 @@ const conversationMemory = [
    OLLAMA CALL
 ============================================================ */
 
+function sanitizeChatMessages(messages) {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+
+  return messages
+    .filter((msg) => msg && typeof msg === 'object')
+    .map((msg) => {
+      const safeMessage = { ...msg };
+
+      if (!safeMessage.role) {
+        return null;
+      }
+
+      if (safeMessage.content === undefined || safeMessage.content === null) {
+        safeMessage.content = '';
+      }
+
+      if (typeof safeMessage.content !== 'string') {
+        safeMessage.content = JSON.stringify(safeMessage.content);
+      }
+
+      if (safeMessage.tool_calls !== undefined && !Array.isArray(safeMessage.tool_calls)) {
+        safeMessage.tool_calls = [];
+      }
+
+      return safeMessage;
+    })
+    .filter(Boolean);
+}
+
 async function callOllama(
   messages,
   options = {}
@@ -1982,13 +2013,15 @@ async function callOllama(
   const useTools = options.tools ?? false;
 
   // Only use cache for non-streaming requests
+  const safeMessages = sanitizeChatMessages(messages);
+
   if (!isStreaming) {
     try {
       // Show brief progress for cache check
       showProgress("Checking cache...");
 
       // Generate cache key
-      const cacheKey = await OllamaCache.generateCacheKey(model, messages, options);
+      const cacheKey = await OllamaCache.generateCacheKey(model, safeMessages, options);
 
       // Try to get cached response
       const cachedResponse = await OllamaCache.get(cacheKey);
@@ -2008,7 +2041,7 @@ async function callOllama(
       // Cache miss - fetch from Ollama
       const requestBody = {
         model: model,
-        messages: messages,
+        messages: safeMessages,
         stream: false,
         think: options.think ?? false
       };
@@ -2071,7 +2104,7 @@ async function callOllama(
   // Streaming requests or cache error fallback
   const requestBody = {
     model: model,
-    messages: messages,
+    messages: safeMessages,
     stream: isStreaming,
     /*
       For the explanation agent we use thinking=false.
