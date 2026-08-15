@@ -44,11 +44,7 @@
 
   </div>
 
-  <!-- Agentic Grid -->
-  <script src="agentic-grid.js"></script>
 
-  <!-- Harness Implementation -->
-  <script src="harness-impl.js"></script>
 
 <script>
 
@@ -2411,7 +2407,7 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
 
     // Call Ollama with tools
     const response = await callOllama(messages, {
-      model: "gemma4:e4b",
+      model: MODEL,
       think: false,
       stream: false,
       tools: true
@@ -2531,7 +2527,7 @@ Paraphrased Version:`;
 
     // Call Ollama with deepseek-r1:8b for paraphrasing (no streaming, no tools)
     const response = await callOllama(paraphraseMessages, {
-      model: "deepseek-r1:8b",
+      model: MODEL,
       think: false,
       stream: false,
       tools: false
