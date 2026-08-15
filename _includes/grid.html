@@ -2003,6 +2003,22 @@ function sanitizeChatMessages(messages) {
     .filter(Boolean);
 }
 
+function extractAssistantMessage(data) {
+  if (data && typeof data.message === 'object' && data.message !== null) {
+    return data.message;
+  }
+
+  const choiceMessage = data?.choices?.[0]?.message;
+  if (choiceMessage && typeof choiceMessage === 'object') {
+    return choiceMessage;
+  }
+
+  return {
+    role: 'assistant',
+    content: data?.content ?? ''
+  };
+}
+
 async function callOllama(
   messages,
   options = {}
@@ -2049,6 +2065,7 @@ async function callOllama(
       // Add tools if requested
       if (useTools && toolSchemas.length > 0) {
         requestBody.tools = toolSchemas;
+        requestBody.tool_choice = 'auto';
       }
 
       // Update progress message for fetch
@@ -2116,6 +2133,7 @@ async function callOllama(
   // Add tools if requested
   if (useTools && toolSchemas.length > 0) {
     requestBody.tools = toolSchemas;
+    requestBody.tool_choice = 'auto';
   }
 
   // Show progress bar for streaming requests
@@ -2454,9 +2472,7 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
       data = {};
     }
 
-    const message = data && typeof data.message === 'object' && data.message !== null
-      ? data.message
-      : { role: 'assistant', content: data?.content ?? '' };
+    const message = extractAssistantMessage(data);
 
     console.log(`Iteration ${iteration}:`, message);
     // Add assistant's response to messages
@@ -2481,8 +2497,21 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
 
     for (let i = 0; i < toolCalls.length; i++) {
       const call = toolCalls[i];
-      const toolName = call.function.name;
-      const toolArgs = call.function.arguments;
+      const toolName = call?.function?.name;
+      const rawToolArgs = call?.function?.arguments;
+
+      let toolArgs = rawToolArgs;
+      if (typeof rawToolArgs === 'string') {
+        try {
+          toolArgs = JSON.parse(rawToolArgs);
+        } catch {
+          toolArgs = {};
+        }
+      }
+
+      if (!toolName) {
+        continue;
+      }
 
       toolsUsed.push(toolName);
       console.log(`  → ${toolName}:`, toolArgs);
@@ -2505,6 +2534,7 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
         // Add tool result to messages
         messages.push({
           role: 'tool',
+          tool_call_id: call.id,
           content: toolResult
         });
       } catch (error) {
@@ -2513,6 +2543,7 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
         // Add error as tool result
         messages.push({
           role: 'tool',
+          tool_call_id: call.id,
           content: JSON.stringify({ error: error.message })
         });
       }
@@ -2577,7 +2608,8 @@ Paraphrased Version:`;
     });
 
     const data = await response.json();
-    const paraphrasedText = data.message?.content?.trim() || userInput;
+    const paraphraseMessage = extractAssistantMessage(data);
+    const paraphrasedText = (paraphraseMessage.content || '').trim() || userInput;
 
     console.log("🔄 Original Input:", userInput);
     console.log("✨ Paraphrased Input:", paraphrasedText);

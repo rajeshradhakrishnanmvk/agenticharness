@@ -506,6 +506,22 @@ const defs = [
 
 const hist = [{ role: 'system', content: SYSTEM }];
 
+function extractAssistantMessage(data) {
+  if (data && typeof data.message === 'object' && data.message !== null) {
+    return data.message;
+  }
+
+  const choiceMessage = data?.choices?.[0]?.message;
+  if (choiceMessage && typeof choiceMessage === 'object') {
+    return choiceMessage;
+  }
+
+  return {
+    role: 'assistant',
+    content: data?.content ?? ''
+  };
+}
+
 
 /* ============================================================
    OLLAMA API CALL
@@ -516,12 +532,13 @@ async function callLLM(msgs) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${DEEPSEEK_API_KEY}`
+      ...(DEEPSEEK_API_KEY ? { 'Authorization': `Bearer ${DEEPSEEK_API_KEY}` } : {})
     },
     body: JSON.stringify({
       model: MODEL,
       messages: msgs,
       tools: defs,
+      tool_choice: 'auto',
       stream: false
     })
   });
@@ -531,7 +548,7 @@ async function callLLM(msgs) {
   }
 
   const data = await response.json();
-  return data.message;
+  return extractAssistantMessage(data);
 }
 
 
@@ -568,8 +585,19 @@ async function run(msgs) {
     console.log(`[Tools] Executing ${msg.tool_calls.length} tool(s)...`);
 
     for (const t of msg.tool_calls) {
-      const { name } = t.function;
-      const args = JSON.parse(t.function.arguments);
+      const name = t?.function?.name;
+      if (!name) {
+        continue;
+      }
+
+      let args = t?.function?.arguments;
+      if (typeof args === 'string') {
+        try {
+          args = JSON.parse(args);
+        } catch {
+          args = {};
+        }
+      }
 
       console.log(`  → Executing: ${name}(${JSON.stringify(args)})`);
 
