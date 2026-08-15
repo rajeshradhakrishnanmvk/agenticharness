@@ -2413,19 +2413,29 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
       tools: true
     });
 
-    const data = await response.json();
-    const message = data.message;
+    let data;
+    try {
+      data = await response.json();
+    } catch (error) {
+      console.error('Invalid Ollama response payload:', error);
+      data = {};
+    }
+
+    const message = data && typeof data.message === 'object' && data.message !== null
+      ? data.message
+      : { role: 'assistant', content: data?.content ?? '' };
+
     console.log(`Iteration ${iteration}:`, message);
     // Add assistant's response to messages
     messages.push(message);
 
     // Check if there are tool calls
-    const toolCalls = message.tool_calls ?? [];
+    const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
 
     if (toolCalls.length === 0) {
       // No more tool calls, return the final response with tools used info
       return {
-        content: message.content,
+        content: message.content ?? '',
         toolsUsed: toolsUsed,
         assistantDiv: assistantDiv
       };
