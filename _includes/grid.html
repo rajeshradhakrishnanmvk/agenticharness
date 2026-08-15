@@ -2430,10 +2430,12 @@ async function generateExplanation(
      Save ONLY the completed explanation.
   */
 
-  conversationMemory.push({
-    role: "assistant",
-    content: fullResponse
-  });
+  if (fullResponse.trim()) {
+    conversationMemory.push({
+      role: "assistant",
+      content: fullResponse
+    });
+  }
 
   // Add like buttons to the message
   const messageId = assistantDiv.dataset.messageId;
@@ -2791,10 +2793,19 @@ async function sendMessage() {
     if (
       !explanation.trim()
     ) {
+      // Some models can emit only thinking tokens and no final answer text.
+      // Show a graceful fallback instead of throwing a hard runtime error.
+      const fallbackText = "I could not generate a final answer this time. Please try again.";
 
-      throw new Error(
-        "Explanation agent returned no content."
-      );
+      const answerContent = assistantDiv.querySelector(".answer-content");
+      if (answerContent && !answerContent.textContent.trim()) {
+        answerContent.textContent = fallbackText;
+      }
+
+      conversationMemory.push({
+        role: "assistant",
+        content: fallbackText
+      });
     }
 
 
