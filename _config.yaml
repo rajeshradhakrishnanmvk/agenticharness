@@ -1,0 +1,5 @@
+plugins:
+  - jekyll-feed
+title: Books timeline
+description: Stephen King's books
+author: Rajesh Radhakrishnan

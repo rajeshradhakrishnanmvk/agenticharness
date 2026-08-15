@@ -1,0 +1,263 @@
+  <!-- Progress Bar -->
+  <div class="progress-container" id="progressContainer">
+    <div class="progress-bar" id="progressBar"></div>
+  </div>
+  <div class="progress-text" id="progressText">Loading...</div>
+
+  <!-- Overlay -->
+  <div class="menu-overlay" id="menuOverlay"></div>
+
+  <!-- History Modal -->
+  <div class="history-modal" id="historyModal">
+    <div class="history-modal-content">
+      <div class="history-modal-header">
+        <div class="history-modal-title">📜 Conversation History</div>
+        <button class="history-modal-close" id="historyModalClose">×</button>
+      </div>
+      <div class="history-list" id="historyList">
+        <!-- History items will be populated here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal -->
+  <div class="agent-modal" id="settingsModal">
+    <div class="agent-modal-content">
+      <div class="agent-modal-header">
+        <div class="agent-modal-title">⚙️ Settings</div>
+        <button class="agent-modal-close" id="settingsModalClose">×</button>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>🌐</span>
+          <span>Ollama Configuration</span>
+        </div>
+        <div class="agent-section-description">
+          Configure the Ollama server URL and default model for AI responses.
+        </div>
+
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-weight: 600; margin-bottom: 6px; color: #374151;">
+            Ollama URL
+          </label>
+          <input
+            type="text"
+            id="ollamaUrlInput"
+            class="agent-name-input"
+            placeholder="e.g., http://localhost:11434/api/chat"
+          />
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            The API endpoint for your Ollama server
+          </div>
+        </div>
+
+        <div>
+          <label style="display: block; font-weight: 600; margin-bottom: 6px; color: #374151;">
+            Default Model
+          </label>
+          <input
+            type="text"
+            id="modelInput"
+            class="agent-name-input"
+            placeholder="e.g., deepseek-r1:8b, llama3:8b"
+          />
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            The model to use for generating responses
+          </div>
+        </div>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>📄</span>
+          <span>Grid Pagination</span>
+        </div>
+        <div class="agent-section-description">
+          Configure how many rows to display per page in the grid.
+        </div>
+
+        <div>
+          <label style="display: block; font-weight: 600; margin-bottom: 6px; color: #374151;">
+            Records Per Page
+          </label>
+          <input
+            type="number"
+            id="recordsPerPageInput"
+            class="agent-name-input"
+            placeholder="e.g., 10, 20, 50"
+            min="1"
+            max="1000"
+          />
+          <div style="font-size: 12px; color: #6b7280; margin-top: 4px;">
+            Number of rows to display per page (default: 10)
+          </div>
+        </div>
+      </div>
+
+      <div class="agent-info-box">
+        💡 <strong>Tip:</strong> These settings are stored locally and will persist across sessions. Make sure your Ollama server is running at the specified URL.
+      </div>
+
+      <div class="agent-actions">
+        <button class="agent-btn agent-btn-secondary" id="settingsCancelBtn">Cancel</button>
+        <button class="agent-btn agent-btn-secondary" id="settingsResetBtn">Reset to Default</button>
+        <button class="agent-btn agent-btn-primary" id="settingsSaveBtn">Save Settings</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Agent Configuration Modal -->
+  <div class="agent-modal" id="agentModal">
+    <div class="agent-modal-content">
+      <div class="agent-modal-header">
+        <div class="agent-modal-title">🤖 Agent Configuration</div>
+        <button class="agent-modal-close" id="agentModalClose">×</button>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>🎯</span>
+          <span>Configuration Scope</span>
+        </div>
+        <div class="agent-section-description">
+          Choose whether this configuration applies to this conversation only or all conversations.
+        </div>
+        <div style="display: flex; gap: 12px; margin-top: 8px;">
+          <label style="flex: 1; padding: 12px; border: 2px solid #d1d5db; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+            <input type="radio" name="configScope" value="conversation" id="scopeConversation" checked style="cursor: pointer;">
+            <div>
+              <div style="font-weight: 600; color: #1f2937;">🔧 This Conversation</div>
+              <div style="font-size: 12px; color: #6b7280;">Applies only to this conversation</div>
+            </div>
+          </label>
+          <label style="flex: 1; padding: 12px; border: 2px solid #d1d5db; border-radius: 8px; cursor: pointer; display: flex; align-items: center; gap: 8px;">
+            <input type="radio" name="configScope" value="global" id="scopeGlobal" style="cursor: pointer;">
+            <div>
+              <div style="font-weight: 600; color: #1f2937;">🌐 All Conversations</div>
+              <div style="font-size: 12px; color: #6b7280;">Becomes default for new conversations</div>
+            </div>
+          </label>
+        </div>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>📛</span>
+          <span>Agent Name</span>
+        </div>
+        <div class="agent-section-description">
+          Give your agent a unique name to help identify it in conversations.
+        </div>
+        <input
+          type="text"
+          id="agentNameInput"
+          class="agent-name-input"
+          placeholder="e.g., Math Expert, Creative Writer, Code Assistant"
+        />
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>✨</span>
+          <span>Agent Soul (Personality & Persona)</span>
+        </div>
+        <div class="agent-section-description">
+          Define the personality, tone, and character of your agent. This shapes how it interacts with you.
+        </div>
+        <textarea
+          id="agentSoulInput"
+          class="agent-textarea"
+          placeholder="e.g., You are a friendly and encouraging math tutor who loves making complex concepts simple. You use analogies and real-world examples."
+        ></textarea>
+      </div>
+
+      <div class="agent-section">
+        <div class="agent-section-title">
+          <span>⚙️</span>
+          <span>System Instructions</span>
+        </div>
+        <div class="agent-section-description">
+          Define the core behavior and capabilities of your agent. These instructions guide how the agent processes requests.
+        </div>
+        <textarea
+          id="agentSystemInput"
+          class="agent-textarea code"
+          placeholder="e.g., You are an expert educational assistant specialized in mathematics..."
+        ></textarea>
+      </div>
+
+      <div class="agent-info-box">
+        💡 <strong>Tip:</strong> The Soul defines personality, while System Instructions define behavior and expertise. Together they create a unique agent for this conversation.
+      </div>
+
+      <div class="agent-actions">
+        <button class="agent-btn agent-btn-secondary" id="agentCancelBtn">Cancel</button>
+        <button class="agent-btn agent-btn-secondary" id="agentResetBtn">Reset to Default</button>
+        <button class="agent-btn agent-btn-primary" id="agentSaveBtn">Save Agent</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Side Menu -->
+  <div class="side-menu" id="sideMenu">
+    <div class="menu-header">Menu</div>
+    <div class="menu-content">
+      <div class="menu-item" id="newConversationBtn">
+        <span class="menu-icon">➕</span>
+        <span>New Conversation</span>
+      </div>
+      <div class="menu-item" id="loadHistoryBtn">
+        <span class="menu-icon">📜</span>
+        <span>Load History</span>
+      </div>
+      <div class="menu-item danger" id="clearHistoryBtn">
+        <span class="menu-icon">🗑️</span>
+        <span>Clear History</span>
+      </div>
+      <div class="menu-item" id="agentConfigBtn">
+        <span class="menu-icon">🤖</span>
+        <span>Agent Configuration</span>
+      </div>
+      <div class="menu-item" id="settingsBtn">
+        <span class="menu-icon">⚙️</span>
+        <span>Settings</span>
+      </div>
+      <div class="menu-item">
+        <span class="menu-icon">ℹ️</span>
+        <span>About</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="header">
+
+    <button class="hamburger-btn" id="hamburgerBtn">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+
+    <div>
+      <h1>AI Agentic Grid</h1>
+      <div class="model-info">
+        <span id="modeIndicator" style="color: #10b981;">🔧 Tool Mode</span> |
+        <span id="agentNameDisplay" style="color: #dbeafe;">Agent: Loading...</span>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+        <input type="checkbox" id="paraphraseToggle" style="cursor: pointer;" checked>
+        <span>🔄 Paraphrase</span>
+      </label>
+      <label style="display: flex; align-items: center; gap: 6px; font-size: 13px; cursor: pointer;">
+        <input type="checkbox" id="toolModeToggle" style="cursor: pointer;" checked>
+        <span>🔧 Tools</span>
+      </label>
+      <div class="status" id="status">
+        Ready
+      </div>
+    </div>
+
+  </div>
