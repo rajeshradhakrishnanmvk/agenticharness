@@ -514,7 +514,7 @@ const hist = [{ role: 'system', content: SYSTEM }];
 async function callLLM(msgs) {
   const response = await fetch(OLLAMA_URL, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${DEEPSEEK_API_KEY},
     body: JSON.stringify({
       model: MODEL,
       messages: msgs,

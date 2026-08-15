@@ -90,6 +90,8 @@ function saveSettings(settings) {
 let currentSettings = loadSettings();
 let OLLAMA_URL = currentSettings.ollamaUrl;
 let MODEL = currentSettings.model;
+let DEEPSEEK_API_KEY = currentSettings.apiKey || currentSettings.DEEPSEEK_API_KEY || "";
+
 let RECORDS_PER_PAGE = currentSettings.recordsPerPage || DEFAULT_RECORDS_PER_PAGE;
 
 console.log('✅ Settings loaded:', { OLLAMA_URL, MODEL, RECORDS_PER_PAGE });
@@ -1106,11 +1108,12 @@ function openSettingsModal() {
   const ollamaUrlInput = document.getElementById('ollamaUrlInput');
   const modelInput = document.getElementById('modelInput');
   const recordsPerPageInput = document.getElementById('recordsPerPageInput');
-
+  const apiKeyInput = document.getElementById('apiKeyInput'); 
   // Load current settings
   ollamaUrlInput.value = OLLAMA_URL;
   modelInput.value = MODEL;
   recordsPerPageInput.value = RECORDS_PER_PAGE;
+  apiKeyInput.value = DEEPSEEK_API_KEY;
 
   settingsModal.classList.add('active');
   menuOverlay.classList.add('active');
@@ -1128,10 +1131,12 @@ function saveSettingsFromModal() {
   const ollamaUrlInput = document.getElementById('ollamaUrlInput');
   const modelInput = document.getElementById('modelInput');
   const recordsPerPageInput = document.getElementById('recordsPerPageInput');
+  const apiKeyInput = document.getElementById('apiKeyInput');
 
   const newOllamaUrl = ollamaUrlInput.value.trim();
   const newModel = modelInput.value.trim();
   const newRecordsPerPage = parseInt(recordsPerPageInput.value.trim()) || DEFAULT_RECORDS_PER_PAGE;
+  const newApiKey = apiKeyInput.value.trim();
 
   if (!newOllamaUrl) {
     alert('Ollama URL cannot be empty');
@@ -1140,6 +1145,11 @@ function saveSettingsFromModal() {
 
   if (!newModel) {
     alert('Model cannot be empty');
+    return;
+  }
+
+  if (!newApiKey) {
+    alert('API key cannot be empty');
     return;
   }
 
@@ -1152,12 +1162,15 @@ function saveSettingsFromModal() {
   OLLAMA_URL = newOllamaUrl;
   MODEL = newModel;
   RECORDS_PER_PAGE = newRecordsPerPage;
+  DEEPSEEK_API_KEY = newApiKey;
 
   // Save to localStorage
   const settings = {
     ollamaUrl: newOllamaUrl,
     model: newModel,
-    recordsPerPage: newRecordsPerPage
+    recordsPerPage: newRecordsPerPage,
+    apiKey: newApiKey
+
   };
   saveSettings(settings);
 
@@ -1177,10 +1190,12 @@ function resetSettingsToDefault() {
     const ollamaUrlInput = document.getElementById('ollamaUrlInput');
     const modelInput = document.getElementById('modelInput');
     const recordsPerPageInput = document.getElementById('recordsPerPageInput');
-
+    const apiKeyInput = document.getElementById('apiKeyInput');
+    
     ollamaUrlInput.value = DEFAULT_OLLAMA_URL;
     modelInput.value = DEFAULT_MODEL;
     recordsPerPageInput.value = DEFAULT_RECORDS_PER_PAGE;
+    apiKeyInput.value = "";
   }
 }
 
@@ -2017,7 +2032,8 @@ async function callOllama(
             method: "POST",
 
             headers: {
-              "Content-Type": "application/json"
+              "Content-Type": "application/json",
+              ...(DEEPSEEK_API_KEY ? { "Authorization": `Bearer ${DEEPSEEK_API_KEY}` } : {})
             },
 
             body: JSON.stringify(requestBody)
@@ -2085,7 +2101,8 @@ async function callOllama(
         method: "POST",
 
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          ...(DEEPSEEK_API_KEY ? { "Authorization": `Bearer ${DEEPSEEK_API_KEY}` } : {})
         },
 
         body: JSON.stringify(requestBody)
