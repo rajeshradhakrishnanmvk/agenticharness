@@ -2019,6 +2019,26 @@ function extractAssistantMessage(data) {
   };
 }
 
+async function getNonToolCompletion(messages) {
+  const response = await callOllama(messages, {
+    model: MODEL,
+    think: false,
+    stream: false,
+    tools: false
+  });
+
+  let data;
+  try {
+    data = await response.json();
+  } catch (error) {
+    console.error('Invalid non-tool completion payload:', error);
+    return '';
+  }
+
+  const assistantMessage = extractAssistantMessage(data);
+  return (assistantMessage?.content || '').trim();
+}
+
 async function callOllama(
   messages,
   options = {}
@@ -2208,7 +2228,8 @@ async function generateExplanation(
       conversationMemory,
       {
         model: MODEL,
-        think: true,
+        // In no-tool mode, prioritize stable final-answer output.
+        think: false,
         stream: true
       }
     );
@@ -2424,6 +2445,18 @@ async function generateExplanation(
   const cursorElement = answerContent.querySelector('[data-cursor="true"]');
   if (cursorElement) {
     cursorElement.remove();
+  }
+
+  if (!fullResponse.trim()) {
+    console.warn('Empty streamed explanation. Retrying with non-stream completion (tools disabled).');
+    statusElement.textContent = 'Retrying without streaming...';
+
+    const retryResponse = await getNonToolCompletion(conversationMemory);
+    if (retryResponse) {
+      fullResponse = retryResponse;
+      answerContent.textContent = fullResponse;
+      chatContainer.scrollTop = chatContainer.scrollHeight;
+    }
   }
 
   /*
