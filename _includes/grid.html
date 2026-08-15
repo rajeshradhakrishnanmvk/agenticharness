@@ -2415,7 +2415,7 @@ async function handleToolCalls(messages, maxIterations = 3, assistantDiv = null)
 
     const data = await response.json();
     const message = data.message;
-
+    console.log(`Iteration ${iteration}:`, message);
     // Add assistant's response to messages
     messages.push(message);
 
