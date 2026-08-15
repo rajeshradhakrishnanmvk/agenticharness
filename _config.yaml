@@ -1,5 +1,5 @@
 plugins:
   - jekyll-feed
-title: Books timeline
-description: Stephen King's books
+title: Ai Grid
+description: A javascript library for building AI-powered web applications.
 author: Rajesh Radhakrishnan
